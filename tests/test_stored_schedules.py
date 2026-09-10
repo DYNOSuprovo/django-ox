@@ -184,8 +184,7 @@ class TestTheBoundary:
 
     def test_editing_what_it_runs_does_not_move_the_boundary(self):
         # A schedule edited more often than its own period would never fire
-        # if any edit re-anchored it. That is a reported defect elsewhere,
-        # not a hypothetical.
+        # if any edit re-anchored it, so the boundary tracks timing alone.
         row = a_cron(task_key="checked", arguments={"region": "emea"})
         original = row.start_time
         update_schedule(row, arguments={"region": "apac"})
@@ -216,10 +215,12 @@ class TestARetimeGoingRoundTheWriteApi:
         # the tick a worker planned no longer matches and is not written.
         # Exercised end to end in tests/test_stored_dispatch.py.
         row = a_cron()
+        assert row.boundary_for == boundary_digest(row)
         OxSchedule.objects.filter(pk=row.pk).update(cron="0 3 * * *")
         row.refresh_from_db()
-        assert row.cron == "0 3 * * *"
-        assert row.start_time < timezone.now()
+        # The digest is what a worker compares, and it is now stale. Asserting
+        # that the update landed would only be a test of queryset.update().
+        assert row.boundary_for != boundary_digest(row)
 
 
 class TestTheChangeRow:

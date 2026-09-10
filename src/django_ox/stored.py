@@ -323,16 +323,6 @@ def delete_schedule(schedule: OxSchedule) -> None:
         _touch_change_row(alias)
 
 
-def schedule_to_trigger_config(schedule: OxSchedule) -> dict[str, Any]:
-    """The SCHEDULES-shaped timing config a stored row describes."""
-    if schedule.trigger == OxSchedule.Trigger.CRON:
-        return {"cron": schedule.cron}
-    return {
-        "every": timedelta(seconds=schedule.every_seconds or 0),
-        "phase": timedelta(seconds=schedule.phase_seconds),
-    }
-
-
 def _lock_row(pk: int, db_alias: str) -> OxSchedule | None:
     """
     Take this schedule's row lock and return the row as it stands.
@@ -619,9 +609,9 @@ class DatabaseScheduleSource:
             )
             return None
         if row is None or not row.enabled:
-            # Drop it from the snapshot too. Returning None alone left the
-            # row in the cache, so every later pass planned its tick again
-            # and took its lock again, for a schedule that cannot fire.
+            # Drop it from the snapshot too. Returning None alone would
+            # leave the row in the cache, so every later pass would plan its
+            # tick and take its lock again for a schedule that cannot fire.
             self._cached = [
                 s for s in self._cached if s.dispatch_key != f"{STORED_KEY_PREFIX}{pk}"
             ]

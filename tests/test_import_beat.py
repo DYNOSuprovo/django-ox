@@ -215,6 +215,7 @@ def test_a_name_holding_a_quote_still_emits_runnable_code(beat_tables):
             "UPDATE django_celery_beat_periodictask SET name = %s WHERE id = 1",
             ['say "hello"\\backslash'],
         )
-    for line in run().splitlines():
-        if line.startswith("create_schedule("):
-            compile(line, "<generated>", "eval")
+    calls = [line for line in run().splitlines() if line.startswith("create_schedule(")]
+    assert calls, "the command printed no calls to check"
+    for line in calls:
+        compile(line, "<generated>", "eval")

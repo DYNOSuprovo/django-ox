@@ -4,6 +4,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from django.apps import apps
+from django.conf import settings
 from django.core import checks
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import router, transaction
@@ -247,6 +248,33 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E008",
                 )
             )
+        # A tick's identity is (schedule name, tick time), and under
+        # USE_TZ=False that time is stored as a naive wall clock. Where the
+        # clock goes back, one label covers two instants, so the second is
+        # read as a tick already recorded. A cron schedule then fires once
+        # rather than twice, which is arguable; an interval loses roughly
+        # half its runs for the length of the repeated hour, which is not.
+        # Not fixable without changing what the tick log stores, and that
+        # table's schema is a published promise.
+        if not settings.USE_TZ:
+            from .schedules import zone_repeats_an_hour
+
+            if zone_repeats_an_hour():
+                errors.append(
+                    checks.Warning(
+                        f"USE_TZ is off and TIME_ZONE is {settings.TIME_ZONE!r}, "
+                        "which puts the clock back once a year. Schedule ticks "
+                        "are recorded against the wall clock, so an interval "
+                        "schedule loses about half its runs for the length of "
+                        "the repeated hour and a cron schedule inside it fires "
+                        "once rather than twice.",
+                        hint=(
+                            "Set USE_TZ = True, or set TIME_ZONE to a zone with "
+                            "no daylight-saving transition such as 'UTC'."
+                        ),
+                        id="django_ox.W001",
+                    )
+                )
         from .timeouts import lease_timing_problems, task_timeout_problems
 
         for problem in lease_timing_problems(self.options):

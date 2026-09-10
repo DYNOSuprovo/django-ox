@@ -179,14 +179,15 @@ class Command(BaseCommand):
         try:
             from zoneinfo import ZoneInfo
 
-            theirs, ours = ZoneInfo(str(zone)), ZoneInfo(settings.TIME_ZONE)
+            row_zone = ZoneInfo(str(zone))
+            project_zone = ZoneInfo(settings.TIME_ZONE)
         except Exception:
             return str(zone) == settings.TIME_ZONE
         probe = datetime(2026, 1, 1)
         summer = datetime(2026, 7, 1)
         return all(
-            probe.replace(tzinfo=theirs).utcoffset()
-            == probe.replace(tzinfo=ours).utcoffset()
+            probe.replace(tzinfo=row_zone).utcoffset()
+            == probe.replace(tzinfo=project_zone).utcoffset()
             for probe in (probe, summer)
         )
 

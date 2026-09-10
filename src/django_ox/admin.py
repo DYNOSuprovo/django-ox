@@ -12,7 +12,7 @@ report counts.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from django import forms
 from django.conf import settings
@@ -20,6 +20,7 @@ from django.contrib import admin, messages
 from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
+from django.utils import timezone
 from django.utils.html import format_html, format_html_join
 
 from . import actions, registry, stored
@@ -248,6 +249,39 @@ class OxScheduleForm(_ScheduleForm):
                 else "No tasks are exposed yet. Register one with @schedulable."
             ),
         )
+
+    def _effective_start_time(self, cleaned: dict[str, Any]) -> Any:
+        """
+        The activation boundary this submission will end up with.
+
+        `start_time` is not a form field. The service layer sets it: to now
+        when a schedule is created, retimed or re-enabled, and to whatever
+        the row already held otherwise. Django excludes a field the form
+        does not carry from its own validation, so without this the pair is
+        never compared on the way in.
+        """
+        if self.instance.pk is None:
+            return timezone.now()
+        moved = any(
+            cleaned.get(field) != getattr(self.instance, field)
+            for field in stored.TIMING_FIELDS
+        ) or (cleaned.get("enabled") and not self.instance.enabled)
+        return timezone.now() if moved else self.instance.start_time
+
+    def clean(self) -> dict[str, Any]:
+        cleaned = cast("dict[str, Any]", super().clean())
+        end_time = cleaned.get("end_time")
+        if end_time is not None and end_time <= self._effective_start_time(cleaned):
+            # As a field error rather than an exception out of the save. The
+            # same rule runs again in validate_schedule, which is the
+            # authority for every write path; this is what puts it in front
+            # of the person filling the form in.
+            self.add_error(
+                "end_time",
+                "The end time must be after the start time, which this "
+                "submission sets to now.",
+            )
+        return cleaned
 
 
 @admin.register(OxSchedule)

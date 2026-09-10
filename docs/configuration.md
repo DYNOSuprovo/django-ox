@@ -98,7 +98,8 @@ Two intervals are derived rather than flagged:
 - Schedule dispatch runs every `max(1, min(interval, 30))` seconds, about once
   a second at the default polling interval. It runs whether or not any schedule
   is configured, because a source that reads the database can gain one at any
-  time; a pass with nothing due costs a list check and no query.
+  time; a pass with no schedules configured at all returns on a list check,
+  before any query.
 
 ### Routing a queue to its own worker
 
@@ -223,6 +224,11 @@ alert are on the
 - `django_ox.E007`: a `SCHEDULABLE_TASKS` entry is invalid (task or form
   path does not import, the form is not an `ArgsForm`, unknown keys, or a
   key already registered for a different task).
+- `django_ox.W001`: `USE_TZ` is off and `TIME_ZONE` puts the clock back once
+  a year. Tick times are stored against the wall clock, so the repeated hour
+  has one label for two instants: an interval schedule loses about half its
+  runs for the length of it, and a cron schedule inside it fires once rather
+  than twice. Set `USE_TZ = True`, or a zone with no transition.
 - `django_ox.E008`: a database router sends the django-ox models to more
   than one database. A task row and its schedule tick row are written in one
   transaction, which is what makes a due tick enqueue once, so they have to

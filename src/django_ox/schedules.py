@@ -26,6 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol, cast, runtime_checkable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -168,8 +169,8 @@ class Schedule:
     #: is decided from what this returns, because every column the decision
     #: rests on can change between the read and the dispatch: the timing,
     #: the boundary, the deadline, the task, the arguments. Re-checking a
-    #: chosen few of them was the previous design and each column left out
-    #: was a way through.
+    #: chosen few of them would leave every column not on the list a way
+    #: through.
     #:
     #: A source with nothing to refresh leaves this None and is dispatched
     #: from its snapshot, which for settings is the same thing.
@@ -189,6 +190,25 @@ class Schedule:
         Dispatch reads `trigger`.
         """
         return self.trigger if isinstance(self.trigger, CronExpression) else None
+
+
+def zone_repeats_an_hour() -> bool:
+    """
+    Does the project's time zone put the clock back at any point in a year?
+
+    Sampled at midwinter and midsummer, which separates every zone that
+    observes a transition from every zone that does not. A zone whose two
+    samples agree may still have had a one-off historical change, and that
+    is not what this is for.
+    """
+    try:
+        zone = ZoneInfo(settings.TIME_ZONE)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    offsets = {
+        datetime(2025, month, 1, 12, tzinfo=zone).utcoffset() for month in (1, 7)
+    }
+    return len(offsets) > 1
 
 
 def schedule_name_collisions(backend_alias: str) -> list[tuple[str, str]]:
@@ -444,7 +464,7 @@ def schedule_source_from_options(
         )
     source = cls(options, backend_alias)
     # Checked on the instance rather than with issubclass, so a source is
-    # free to be any class with the method instead of inheriting ours.
+    # free to be any class with the method instead of inheriting a base.
     if not callable(getattr(source, "schedules", None)):
         raise ImproperlyConfigured(
             f"SCHEDULE_SOURCE {path!r} on backend {backend_alias!r} has no "

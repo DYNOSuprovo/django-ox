@@ -393,8 +393,8 @@ class Supervisor:
                 self._kill_overdue()
                 time.sleep(POLL_INTERVAL)
         finally:
-            # Whatever path brought us here (a stop, the cap, an exception),
-            # leave no child behind.
+            # Whatever path reached this point (a stop, the cap, an
+            # exception), leave no child behind.
             self.request_stop()
             self._signal_children(signal.SIGTERM)
             for index, proc in self._children.items():

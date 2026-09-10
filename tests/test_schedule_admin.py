@@ -175,7 +175,7 @@ class TestPerEntryPermission:
         # What matters is whether a POST can write.
         row = a_schedule(name="r", task_key="restricted")
         client.force_login(staff_user)
-        response = client.post(
+        client.post(
             reverse(CHANGE_URL, args=[row.pk]),
             {
                 "name": row.name,
@@ -187,7 +187,6 @@ class TestPerEntryPermission:
                 "enabled": "on",
             },
         )
-        assert response.status_code in (200, 302, 403)
         row.refresh_from_db()
         assert row.cron == "0 2 * * *", "the restricted row must be unchanged"
 
@@ -208,9 +207,9 @@ class TestPerEntryPermission:
 
 class TestRunOnceNowMatchesADispatchedTick:
     def test_it_passes_the_cleaned_arguments(self, client, admin_user):
-        # A dispatched tick carries what the form cleans to; running one
-        # from the admin enqueued the row's raw values, so the same
-        # schedule could carry different arguments depending on how it ran.
+        # A dispatched tick carries what the form cleans to, so running one
+        # from the admin must build it the same way: the row's raw values
+        # would make the same schedule differ by how it was started.
         from django import forms
 
         from django_ox.registry import ArgsForm, ScheduleKind, register
@@ -299,8 +298,8 @@ class TestActions:
 class TestReEnableThroughTheChangeForm:
     def test_the_boundary_moves(self, client, admin_user):
         # Through the form, not the action. save_model hands update_schedule
-        # form.instance, which _post_clean has already updated, so reading the
-        # previous value off that instance never showed a transition.
+        # form.instance, which _post_clean has already updated, so reading
+        # the previous value off that instance would never show a transition.
         row = a_schedule()
         update_schedule(row, enabled=False)
         paused_boundary = row.start_time
@@ -341,9 +340,9 @@ class TestDeletePermission:
 class TestTheAddFlowLeavesASavedObject:
     def test_save_and_continue_editing_goes_to_the_row(self, client, admin_user):
         # save_model routes creation through the service layer, which builds
-        # and saves its own instance. Without binding the result back, the
-        # admin holds an object with no pk: this redirect went to a URL
-        # containing None and 404ed.
+        # and saves its own instance. Without binding the result back the
+        # admin holds an object with no pk, and this redirect targets a URL
+        # containing None.
         client.force_login(admin_user)
         response = client.post(
             reverse(ADD_URL),
@@ -384,3 +383,115 @@ class TestTheAddFlowLeavesASavedObject:
         assert entry.object_id == str(row.pk), (
             "the row's admin history is attached to nothing"
         )
+
+
+class TestAnEndTimeInThePastIsAFieldError:
+    """
+    `start_time` is not a form field, so Django leaves it out of the form's
+    own validation and the pair is never compared on the way in. The
+    service layer then sets it to now and refuses the row, which reaches
+    the person filling the form in as a server error rather than as an
+    error on the field they got wrong.
+    """
+
+    def _post(self, client, **over):
+        fields = {
+            "name": "nightly",
+            "task_key": "report",
+            "trigger": "cron",
+            "cron": "0 2 * * *",
+            "arguments": "{}",
+            "phase_seconds": 0,
+            "enabled": "on",
+        }
+        fields.update(over)
+        return client.post(reverse(ADD_URL), fields)
+
+    def test_adding_one_reports_the_field_rather_than_failing(self, client, admin_user):
+        client.force_login(admin_user)
+        yesterday = timezone.now() - timedelta(days=1)
+        response = self._post(
+            client,
+            end_time_0=yesterday.strftime("%Y-%m-%d"),
+            end_time_1=yesterday.strftime("%H:%M:%S"),
+        )
+        assert response.status_code == 200, "the form should be redisplayed"
+        assert "end_time" in response.context["adminform"].form.errors
+        assert not OxSchedule.objects.filter(name="nightly").exists()
+
+    def test_a_future_end_time_is_accepted(self, client, admin_user):
+        client.force_login(admin_user)
+        tomorrow = timezone.now() + timedelta(days=1)
+        response = self._post(
+            client,
+            end_time_0=tomorrow.strftime("%Y-%m-%d"),
+            end_time_1=tomorrow.strftime("%H:%M:%S"),
+        )
+        assert response.status_code == 302
+        assert OxSchedule.objects.filter(name="nightly").exists()
+
+    def test_an_existing_schedule_may_keep_a_past_end_time(self, client, admin_user):
+        # Not every past end time is wrong: a schedule that ran and has
+        # since ended holds one legitimately. Only a submission that also
+        # moves the boundary to now makes the pair impossible.
+        client.force_login(admin_user)
+        row = a_schedule(name="ended")
+        past = row.start_time + timedelta(hours=1)
+        OxSchedule.objects.filter(pk=row.pk).update(end_time=past)
+        response = client.post(
+            reverse(CHANGE_URL, args=[row.pk]),
+            {
+                "name": "ended",
+                "task_key": "report",
+                "trigger": "cron",
+                "cron": row.cron,
+                "arguments": "{}",
+                "phase_seconds": 0,
+                "enabled": "on",
+                "end_time_0": past.strftime("%Y-%m-%d"),
+                "end_time_1": past.strftime("%H:%M:%S"),
+            },
+        )
+        assert response.status_code == 302, "an unchanged timing must still save"
+
+
+class TestDeletingThroughTheAdminTellsTheWorkers:
+    """
+    Both delete hooks reach into the service layer to bump the change
+    marker. Without it a deleted schedule stays in every running worker's
+    cache, enqueueing and rolling back once a pass.
+    """
+
+    def test_deleting_one_row_bumps_the_marker(self, client, admin_user):
+        from django_ox.models import OxScheduleChange
+
+        client.force_login(admin_user)
+        row = a_schedule()
+        before = OxScheduleChange.objects.get(id=1).changed_at
+        response = client.post(
+            reverse("admin:django_ox_oxschedule_delete", args=[row.pk]),
+            {"post": "yes"},
+        )
+        assert response.status_code == 302
+        assert not OxSchedule.objects.filter(pk=row.pk).exists()
+        assert OxScheduleChange.objects.get(id=1).changed_at > before
+
+    def test_deleting_a_selection_bumps_the_marker_once(self, client, admin_user):
+        from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
+
+        from django_ox.models import OxScheduleChange
+
+        client.force_login(admin_user)
+        rows = [a_schedule(name=f"s{i}") for i in range(3)]
+        before = OxScheduleChange.objects.get(id=1).changed_at
+        response = client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {
+                "action": "delete_selected",
+                ACTION_CHECKBOX_NAME: [str(r.pk) for r in rows],
+                "post": "yes",
+            },
+        )
+        assert response.status_code == 302
+        assert not OxSchedule.objects.exists()
+        assert OxScheduleChange.objects.get(id=1).changed_at > before

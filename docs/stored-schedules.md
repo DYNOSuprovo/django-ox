@@ -113,6 +113,11 @@ after the schedule's `start_time`.**
 That field is the activation boundary. It is set when the row is created. A few
 events move it forward, and each of those is a rule below.
 
+`end_time` is the other bound: no tick after it fires, and it is how a schedule
+is stopped on a date rather than by hand. Both can be passed to
+`create_schedule`; `start_time` defaults to the moment of creation and
+`end_time` to none, meaning the schedule runs until it is disabled or deleted.
+
 ### A new schedule waits for its next tick
 
 Create a daily 02:00 schedule at 15:00 and it first runs at 02:00 tomorrow. It
@@ -152,13 +157,14 @@ Anything that came due while it was disabled does not run.
 That is deliberate, and it differs from some systems you may know. Kubernetes
 documents that unsuspending a CronJob with no starting deadline schedules what
 was missed, and Quartz applies its misfire instruction on resume, which for a
-cron trigger fires once by default. Temporal takes our side and tells you to
-backfill deliberately if you wanted those runs.
+cron trigger fires once by default. Temporal does the same as django-ox here
+and tells you to backfill deliberately if you wanted those runs.
 
-We take Temporal's. The point of pausing is that things stop, and a resume that
-fires everything you paused through fails at the same moment, one step later.
+The point of pausing is that things stop. A resume that fires everything you
+paused through fails at the same moment, one step later.
 
-If you did want those runs, run them yourself. There is no backfill command.
+If you did want those runs, enqueue them yourself. Backfilling is a decision,
+not a side effect of resuming.
 
 ### After downtime, only the most recent tick runs
 
@@ -193,9 +199,9 @@ create_schedule(
 The default is no deadline, which is what settings-declared schedules have always
 done: run however late.
 
-A dropped tick logs `schedule_tick_dropped` with how late it was, so you can
-alert on it. Most schedulers drop late runs silently, and that silence is the
-part people complain about.
+A dropped tick logs `schedule_tick_dropped` with how late it was, so a drop is
+a signal rather than an absence. Each worker reports a given tick once, not once
+per dispatch pass.
 
 ### An edit takes effect immediately, even mid-dispatch
 
@@ -224,8 +230,9 @@ the admin, which calls it.
 ### Renaming is safe
 
 A schedule's name is a label. What its ticks are recorded against is the row
-itself, so renaming one keeps its history and cannot make it run twice while
-workers hold different views of the name.
+itself, so renaming one keeps its history, and a tick is not enqueued twice
+while workers hold different views of the name. Execution stays at-least-once,
+as it is for every task.
 
 One consequence: a settings-declared schedule may not be named with a `db:`
 prefix, which is reserved for exactly this. `manage.py check` refuses it.
@@ -251,8 +258,13 @@ update_schedule(schedule, cron="0 3 * * *")
 
 Use these rather than `OxSchedule.objects.create()`. Django's `save()` does not
 run model validation, so a direct write skips the checks, leaves the activation
-boundary set for the old timing, and doesn't tell workers the row moved. A
-schedule written that way is skipped and logged at dispatch rather than trusted.
+boundary set for the old timing, and doesn't tell workers the row moved.
+
+A row written that way is validated when a worker reads it. One that does not
+validate is skipped and logged as `schedule_row_skipped`. One that does validate
+runs, but its activation boundary is moved to the moment a worker noticed the
+row and logged as `schedule_boundary_healed`, so any `start_time` the writer
+chose is discarded.
 
 `update_schedule` and `create_schedule` take an optional `user=`, and enforce any
 per-entry permission when you pass one.
@@ -304,7 +316,8 @@ Worth knowing before you turn it on:
 
 ## Monitoring
 
-The events these schedules emit, all listed with the rest on the [monitoring](monitoring.md) page:
+The events worth alerting on. The full set, with every field, is on the
+[monitoring](monitoring.md) page:
 
 | Event | Meaning |
 | --- | --- |

@@ -148,7 +148,25 @@ class TestTheDisableRace:
         assert OxTask.objects.count() == 0
 
 
+@pytest.fixture
+def half_past(monkeypatch):
+    """
+    A clock pinned well past the hour.
+
+    An hourly tick with a sixty-second deadline is only late once the hour
+    is a minute old. On the wall clock these tests would pass for
+    fifty-nine minutes in sixty and fail in the first, which says nothing
+    about the code.
+    """
+    from django.utils import timezone as tz
+
+    pinned = tz.now().replace(minute=30, second=0, microsecond=0)
+    monkeypatch.setattr(tz, "now", lambda: pinned)
+    return pinned
+
+
 class TestTheStartingDeadline:
+    @pytest.mark.usefixtures("half_past")
     def test_a_tick_later_than_the_deadline_is_dropped(self, worker):
         row = create_schedule(
             name="hourly",
@@ -161,6 +179,7 @@ class TestTheStartingDeadline:
         assert row.pk
         assert worker.dispatch_schedules() == 0
 
+    @pytest.mark.usefixtures("half_past")
     def test_without_a_deadline_a_late_tick_still_fires(self, worker):
         create_schedule(
             name="hourly",
@@ -264,7 +283,7 @@ def test_a_schedule_created_mid_minute_waits_for_the_next_tick(worker):
 
 class TestABadRowCannotStopTheWorker:
     def test_a_zero_interval_row_is_skipped_and_the_others_still_fire(self, worker):
-        # This one killed the worker. IntervalTrigger(every=0) raises
+        # IntervalTrigger(every=0) raises
         # ZeroDivisionError, which is not a ValueError, so the per-row guard
         # missed it and it reached the dispatch loop.
         zero = OxSchedule.objects.create(
@@ -282,7 +301,7 @@ class TestABadRowCannotStopTheWorker:
         assert not OxScheduleTick.objects.filter(schedule_name=f"db:{zero.pk}").exists()
 
     def test_a_null_interval_row_cannot_be_created_at_all(self):
-        # The database refuses it now, so the runtime guard never has to see
+        # The check constraint refuses it, so the runtime guard never has to see
         # this shape. Zero still gets through, because zero is not null, which
         # is why both defences exist.
         from django.db.utils import IntegrityError
@@ -337,7 +356,7 @@ class TestDeleteTellsTheWorkers:
 
 class TestRenamingCannotSplitTheCoordination:
     """
-    A rename used to produce two tasks for one tick.
+    A rename must not produce two tasks for one tick.
 
     Ticks are keyed on the dispatch log's name column; admission is keyed on
     the row. When the label a person edits was also the coordination key, two
@@ -399,7 +418,7 @@ class TestTheDecisionComesFromTheRow:
     A snapshot chooses candidates. The row decides.
 
     Each test here changes something after a worker has read the schedule
-    and before it dispatches. Every one of them used to fire anyway,
+    and before it dispatches. None of them fires,
     because admission re-checked two columns and these are not those two.
     """
 
@@ -434,7 +453,7 @@ class TestTheDecisionComesFromTheRow:
 
     def test_a_tightened_deadline_drops_the_tick(self, worker, monkeypatch):
         # The clock is frozen well past the tick. Left to the wall clock,
-        # this asserted that a minutely tick was more than a second old,
+        # the assertion would be that a minutely tick is more than a second old,
         # which is false for the first second of every minute: a one-in-
         # sixty failure that says nothing about the code.
         from django.utils import timezone as tz
@@ -595,8 +614,8 @@ class TestNothingUnserialisableReachesTheEnqueue:
     def test_such_a_row_written_around_validation_does_not_stop_the_others(
         self, worker
     ):
-        # The failure this class exists for: the healthy schedule beside it
-        # fired nothing, because the error escaped the enqueue.
+        # The failure this class exists to prevent: an error escaping the
+        # enqueue stops the healthy schedule beside it from firing.
         from django import forms
 
         self._register("dated", forms.DateField())
@@ -653,7 +672,8 @@ class TestARowChangedOutsideTheWriteApiIsFound:
     """
     The change marker is bumped by this package's write functions and by
     nothing else, so a raw write moves nothing a worker watches. Detection
-    used to sit inside the dispatch transaction, which a row only reaches
+    sits where the rows are read, not inside the dispatch transaction. A row
+    only reaches that transaction
     if the cached copy says a tick is due, so a row whose cached copy said
     otherwise was never examined at all.
     """
@@ -663,9 +683,10 @@ class TestARowChangedOutsideTheWriteApiIsFound:
         source._reconcile_interval = interval
         return source
 
-    def test_a_passed_end_time_no_longer_hides_a_retime(self, worker):
-        # The cached copy says the schedule ended, so no tick is ever due and
-        # the dispatch transaction is never entered. It stayed invisible.
+    def test_a_passed_end_time_does_not_hide_a_retime(self, worker):
+        # The cached copy says the schedule ended, so no tick is ever due
+        # and the dispatch transaction is never entered. Reading the rows is
+        # the only thing that can notice.
         row = a_minutely(
             cron="0 * * * *",
             start_time=timezone.now() - timedelta(days=2),
@@ -765,14 +786,15 @@ class TestADroppedTickIsReportedOnce:
     def test_a_tick_already_recorded_is_not_reported_as_dropped(
         self, worker, caplog, monkeypatch
     ):
-        # The deadline was checked before the already-fired suppression, so
-        # a tick that had run was re-reported as dropped on every later
-        # pass. For a daily schedule that is a warning a second for a day,
-        # and the docs say this event can be alerted on.
+        # The deadline is checked after the already-fired suppression: a
+        # tick that has run is not a tick that was dropped. Checking first
+        # would re-report it on every later pass, which for a daily
+        # schedule is a warning a second for a day on an event the docs
+        # say can be alerted on.
         #
         # The clock has to move: the tick must be fresh when it fires and
-        # stale when it is looked at again, which is the whole shape of the
-        # defect.
+        # stale when it is looked at again, which is the whole shape of
+        # the case.
         import logging
 
         from django.utils import timezone as tz
@@ -802,6 +824,7 @@ class TestADroppedTickIsReportedOnce:
             f"a tick that already fired was reported dropped {len(dropped)} times"
         )
 
+    @pytest.mark.usefixtures("half_past")
     def test_a_genuinely_late_tick_is_still_reported(self, worker, caplog):
         import logging
 
@@ -815,3 +838,28 @@ class TestADroppedTickIsReportedOnce:
         assert any(
             getattr(r, "event", None) == "schedule_tick_dropped" for r in caplog.records
         )
+
+    @pytest.mark.usefixtures("half_past")
+    def test_the_same_dropped_tick_is_reported_once_not_once_a_pass(
+        self, worker, caplog
+    ):
+        # A dropped tick writes no row, so nothing else stops it being
+        # recomputed and reported again on every pass until its next tick
+        # comes due. The docs tell operators to alert on this event, and an
+        # alert that fires once a second for a day cannot be acted on.
+        import logging
+
+        a_minutely(
+            cron="0 * * * *",
+            start_time=timezone.now() - timedelta(days=2),
+            starting_deadline_seconds=60,
+        )
+        with caplog.at_level(logging.WARNING, logger="django_ox"):
+            for _ in range(20):
+                worker.dispatch_schedules()
+        dropped = [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "schedule_tick_dropped"
+        ]
+        assert len(dropped) == 1, f"reported {len(dropped)} times over 20 passes"

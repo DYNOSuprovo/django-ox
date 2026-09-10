@@ -534,6 +534,14 @@ class Worker:
         # rather than reading this, so a source that changes is not stale
         # here in any way that matters.
         self.schedules = self._schedule_source.schedules()
+        #: The last dropped tick reported for each schedule. A dropped tick
+        #: writes no row, so nothing else stops it being recomputed and
+        #: re-reported on every pass until its next tick comes due, which
+        #: for a daily schedule is a warning a second for a day on the one
+        #: event the documentation says to alert on. Dispatch only ever
+        #: considers a schedule's latest tick, so one entry per schedule is
+        #: the whole of what has to be remembered.
+        self._dropped_reported: dict[str, datetime] = {}
         collisions = schedule_name_collisions(backend_alias)
         if collisions:
             name, other_alias = collisions[0]
@@ -2076,8 +2084,14 @@ class Worker:
         Record a tick the starting deadline dropped.
 
         A dropped tick is a decision, not an absence, so it is logged with
-        its lateness and can be alerted on.
+        its lateness and can be alerted on. Once per tick per worker: the
+        same tick stays droppable until the next one comes due, and an
+        alertable event that repeats once a second is an alert nobody can
+        act on.
         """
+        if self._dropped_reported.get(schedule.key) == scheduled_for:
+            return
+        self._dropped_reported[schedule.key] = scheduled_for
         late = (now - scheduled_for).total_seconds()
         logger.warning(
             "Dropped schedule %s tick %s: %.0fs late, past its starting deadline",

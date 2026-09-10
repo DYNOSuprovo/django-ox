@@ -1,3 +1,5 @@
+import sys
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
@@ -515,11 +517,11 @@ class TestDispatchAsksTheSource:
 
     def test_a_source_that_starts_empty_is_asked_again(self, settings):
         # Through worker.run(), not dispatch_schedules(), because the thing
-        # under test is the run loop's own gate. It used to read the schedule
-        # list once at start-up and skip dispatch entirely while that list was
-        # empty, so a source that gained a schedule later was never asked
-        # again. An install whose first schedule is created after the worker
-        # started is the ordinary case for a source backed by rows.
+        # under test is the run loop's own gate. Reading the schedule list
+        # once at start-up and skipping dispatch while it is empty would
+        # leave a source that gains a schedule later never asked again. An
+        # install whose first schedule is created after the worker started is
+        # the ordinary case for a source backed by rows.
         worker = self._worker(settings)
         worker.schedule_interval = 0.02
         source = worker._schedule_source
@@ -661,3 +663,98 @@ class TestTheSettingsPathIsUnchangedByStoredSchedules:
         assert only.refresh is None
         assert only.anchors is True
         assert only.key == only.name
+
+
+@pytest.mark.django_db
+class TestACustomSourceIsHeldToTheSameTickCheck:
+    """
+    Dispatch recomputes the tick from what `refresh()` returns and writes
+    only if it still matches. The stored source reaches that check through
+    a boundary digest or an activation boundary first, so a source written
+    outside this package is the only thing that exercises the recomputation
+    on its own.
+    """
+
+    def _source_class(self, holder):
+        class _Source:
+            def __init__(self, options, backend_alias):
+                pass
+
+            def schedules(self):
+                return [holder["schedule"]]
+
+        return _Source
+
+    def test_a_refresh_answering_a_different_instant_writes_no_tick(
+        self, settings, monkeypatch
+    ):
+        from django_ox.cron import CronExpression
+        from django_ox.schedules import Schedule
+
+        from . import tasks
+
+        holder = {}
+        module = sys.modules[__name__]
+        monkeypatch.setattr(module, "_TickSource", self._source_class(holder), False)
+
+        def refresh():
+            # The same schedule, retimed. Its latest tick is no longer the
+            # instant the snapshot planned, and nothing else about it moved:
+            # no boundary, no digest, no end time.
+            return replace(holder["schedule"], trigger=CronExpression("0 3 * * *"))
+
+        holder["schedule"] = Schedule(
+            name="minutely",
+            task=tasks.add,
+            trigger=CronExpression("* * * * *"),
+            args=(1, 2),
+            kwargs={},
+            anchors=False,
+            refresh=refresh,
+        )
+        settings.TASKS = {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {
+                    "SCHEDULE_SOURCE": f"{__name__}._TickSource",
+                    "SCHEDULES": {},
+                },
+            }
+        }
+        worker = Worker(backoff_initial=0)
+        assert worker.dispatch_schedules() == 0, "a retimed schedule fired anyway"
+        assert OxScheduleTick.objects.count() == 0, "a tick was claimed and not run"
+
+    def test_a_refresh_answering_the_same_instant_still_fires(
+        self, settings, monkeypatch
+    ):
+        from django_ox.cron import CronExpression
+        from django_ox.schedules import Schedule
+
+        from . import tasks
+
+        holder = {}
+        module = sys.modules[__name__]
+        monkeypatch.setattr(module, "_TickSource", self._source_class(holder), False)
+        holder["schedule"] = Schedule(
+            name="minutely",
+            task=tasks.add,
+            trigger=CronExpression("* * * * *"),
+            args=(1, 2),
+            kwargs={},
+            anchors=False,
+            refresh=lambda: holder["schedule"],
+        )
+        settings.TASKS = {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {
+                    "SCHEDULE_SOURCE": f"{__name__}._TickSource",
+                    "SCHEDULES": {},
+                },
+            }
+        }
+        worker = Worker(backoff_initial=0)
+        assert worker.dispatch_schedules() == 1

@@ -123,6 +123,12 @@ def test_dispatch_and_a_concurrent_disable_do_not_deadlock():
         [*[w.dispatch_schedules for w in workers], disable_all, disable_all]
     )
     assert not raised, raised
+    # A worker whose dispatch loop had stopped working entirely would also
+    # raise nothing, so prove the machinery still fires afterwards. A fresh
+    # schedule rather than the disabled ones: re-enabling moves the
+    # activation boundary to now, so those would correctly fire nothing.
+    a_minutely(name="after")
+    assert Worker(backoff_initial=0).dispatch_schedules() == 1
 
 
 def test_no_tick_is_claimed_without_being_run():
@@ -152,8 +158,8 @@ def test_no_tick_is_claimed_without_being_run():
 
 
 def test_a_rename_under_contention_still_fires_one_task():
-    # The interleaving that produced two tasks. Workers read before the
-    # rename, another reads after, and they all dispatch at once.
+    # The interleaving that would produce two tasks. Workers read before
+    # the rename, another reads after, and they all dispatch at once.
     row = a_minutely()
     early = [Worker(backoff_initial=0) for _ in range(3)]
     for w in early:

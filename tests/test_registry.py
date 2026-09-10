@@ -214,3 +214,52 @@ class TestSettingsReachEveryProcess:
         for _ in range(2):
             with pytest.raises(ImproperlyConfigured, match="cannot import task"):
                 kinds()
+
+
+class TestLazyDiscovery:
+    """
+    `_discover()` calls `autodiscover_modules("tasks")`, which is the path
+    every real project takes and the one every fixture in this suite skips
+    by setting `_discovered` first. A typo there would ship green.
+    """
+
+    def test_a_tasks_module_is_imported_on_the_first_lookup(self, monkeypatch):
+        imported = []
+        monkeypatch.setattr("django_ox.registry._registry", {})
+        monkeypatch.setattr("django_ox.registry._discovered", False)
+        monkeypatch.setattr(
+            "django_ox.registry.autodiscover_modules",
+            lambda name: imported.append(name),
+        )
+        kinds()
+        assert imported == ["tasks"], "the tasks modules were never discovered"
+
+    def test_discovery_runs_once_however_often_the_registry_is_read(self, monkeypatch):
+        imported = []
+        monkeypatch.setattr("django_ox.registry._registry", {})
+        monkeypatch.setattr("django_ox.registry._discovered", False)
+        monkeypatch.setattr(
+            "django_ox.registry.autodiscover_modules",
+            lambda name: imported.append(name),
+        )
+        kinds()
+        kinds()
+        assert imported == ["tasks"], f"discovered {len(imported)} times"
+
+    def test_a_tasks_module_that_raises_is_not_re_imported(self, monkeypatch):
+        calls = []
+
+        def boom(name):
+            calls.append(name)
+            raise RuntimeError("a tasks module raised on import")
+
+        monkeypatch.setattr("django_ox.registry._registry", {})
+        monkeypatch.setattr("django_ox.registry._discovered", False)
+        monkeypatch.setattr("django_ox.registry.autodiscover_modules", boom)
+        with pytest.raises(RuntimeError):
+            kinds()
+        # The flag is set before the import, so one broken app is one
+        # failure rather than one on every lookup for the rest of the
+        # process.
+        kinds()
+        assert calls == ["tasks"]

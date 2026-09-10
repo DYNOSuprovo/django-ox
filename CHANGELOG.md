@@ -79,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same instants from the definition alone, which is what keeps dispatch
   leaderless. `every` must be at least one second, because the dispatch loop
   cannot honour anything faster.
+- `django_ox.W001` reports `USE_TZ = False` together with a `TIME_ZONE` that
+  puts the clock back once a year. A tick's time is stored as a wall clock
+  there, so one label covers both passes of the repeated hour: an interval
+  schedule loses about half its runs for the length of it, and a cron schedule
+  inside it fires once rather than twice. The schedules page states the effect.
 - `django_ox.E008` reports django-ox models routed to more than one database.
   A task row and its tick row commit together, which is what makes a due tick
   enqueue once, so they must share a database. Routing the app to a single

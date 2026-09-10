@@ -2,14 +2,14 @@
 Schedules across a daylight-saving transition.
 
 Driven through `dispatch_schedules` with a frozen clock, not through the
-trigger alone. Testing the trigger in isolation is how the fall-back defect
-below reached a review: the arithmetic looked right and the dispatch path
-was where it went wrong.
+trigger alone. The trigger's arithmetic and the dispatch path can disagree
+about a repeated hour, and only the dispatch path is what runs.
 """
 
 import datetime as dt
 from datetime import timedelta
 from itertools import pairwise
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.utils import timezone
@@ -66,9 +66,9 @@ class TestTheRepeatedHour:
         self, every, monkeypatch, settings
     ):
         # The repeated hour has two distinct instants for one wall-clock
-        # label. Deriving the tick by arithmetic dropped the fold, so both
-        # passes produced the same instant and the second was suppressed as
-        # already recorded: an interval fired nothing for a whole hour.
+        # label. Deriving the tick by arithmetic drops the fold, which would
+        # give both passes the same instant, suppress the second as already
+        # recorded, and fire nothing for the whole hour.
         fired = run_across(
             monkeypatch,
             settings,
@@ -106,6 +106,9 @@ class TestTheRepeatedHour:
             0,
             3,
         )
+        # The count as well as the gap: an evenly spaced subset satisfies the
+        # gap on its own, so two surviving ticks would pass it.
+        assert len(fired) == 11, f"expected every quarter hour, got {fired}"
         assert biggest_gap(fired) == timedelta(minutes=15)
 
 
@@ -136,4 +139,73 @@ class TestTheMissingHour:
             0,
             3,
         )
+        assert len(fired) == 11, f"expected every quarter hour, got {fired}"
         assert biggest_gap(fired) == timedelta(minutes=15)
+
+
+class TestTheWallClockLimitWithoutTimeZoneSupport:
+    """
+    Under USE_TZ=False a tick's time is stored as a naive wall clock, and
+    the repeated hour has one label for two instants. The second is read as
+    a tick already recorded.
+
+    Recorded here as a limit rather than half-guarded. Closing it means
+    changing what the tick log stores, and that table's schema is a
+    published promise. `django_ox.W001` reports the configuration, and the
+    schedules page states the effect.
+    """
+
+    def test_an_interval_loses_the_repeated_hour_s_second_pass(
+        self, monkeypatch, settings
+    ):
+        settings.TIME_ZONE = "Europe/London"
+        settings.USE_TZ = False
+        settings.TASKS = tasks_setting(
+            {"iv": {"task": "tests.tasks.add", "every": 1800}}
+        )
+        worker = Worker(backoff_initial=0)
+        base = dt.datetime(2025, 10, 26, tzinfo=dt.UTC)
+        clock = {"utc": base}
+        # USE_TZ=False makes timezone.now() naive local time. Stepping the
+        # underlying UTC instant is what makes the repeated hour happen.
+        monkeypatch.setattr(
+            timezone,
+            "now",
+            lambda: (
+                clock["utc"].astimezone(ZoneInfo("Europe/London")).replace(tzinfo=None)
+            ),
+        )
+        stop = base + timedelta(hours=3)
+        while clock["utc"] < stop:
+            worker.dispatch_schedules()
+            clock["utc"] += timedelta(minutes=1)
+        fired = sorted(
+            OxScheduleTick.objects.exclude(task__isnull=True).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+        # Six half-hourly instants pass in three hours, four distinct wall
+        # clock labels cover them, and the first is spent anchoring.
+        assert len(fired) == 3, f"expected the documented loss, got {fired}"
+        # The gap alone cannot see this, which is why the count is asserted.
+        assert biggest_gap(fired) == timedelta(minutes=30)
+
+    def test_the_check_reports_the_configuration(self, settings):
+        from django_ox.compat import default_task_backend
+
+        settings.TIME_ZONE = "Europe/London"
+        settings.USE_TZ = False
+        settings.TASKS = tasks_setting(
+            {"iv": {"task": "tests.tasks.add", "every": 1800}}
+        )
+        assert "django_ox.W001" in [e.id for e in default_task_backend.check()]
+
+    def test_a_zone_without_a_transition_is_not_reported(self, settings):
+        from django_ox.compat import default_task_backend
+
+        settings.TIME_ZONE = "UTC"
+        settings.USE_TZ = False
+        settings.TASKS = tasks_setting(
+            {"iv": {"task": "tests.tasks.add", "every": 1800}}
+        )
+        assert "django_ox.W001" not in [e.id for e in default_task_backend.check()]
