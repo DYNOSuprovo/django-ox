@@ -863,3 +863,54 @@ class TestADroppedTickIsReportedOnce:
             if getattr(r, "event", None) == "schedule_tick_dropped"
         ]
         assert len(dropped) == 1, f"reported {len(dropped)} times over 20 passes"
+
+
+class TestAnIntegrityErrorFromTheEnqueueIsNotALostRace:
+    """
+    The enqueue and the tick INSERT share one transaction, so an integrity
+    failure raised by the task write surfaces the same way a lost race
+    does. A winner leaves a tick row behind and a failing enqueue does not,
+    which is what separates them. Read as a lost race, a real failure would
+    be retried silently for as long as it kept failing.
+    """
+
+    def test_a_failing_enqueue_is_reported(self, worker, caplog, monkeypatch):
+        import logging
+
+        from django.db import IntegrityError
+
+        a_minutely()
+
+        def boom(*args, **kwargs):
+            raise IntegrityError("the task write failed")
+
+        monkeypatch.setattr("django_ox.backend.OxBackend.enqueue", boom, raising=True)
+        with caplog.at_level(logging.ERROR, logger="django_ox"):
+            assert worker.dispatch_schedules() == 0
+        assert [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "schedule_dispatch_error"
+        ], "a failing enqueue was read as another worker winning the race"
+        assert not OxScheduleTick.objects.exists(), "a tick was claimed anyway"
+
+    def test_a_genuine_lost_race_stays_silent(self, worker, caplog):
+        import logging
+
+        from django.utils import timezone as tz
+
+        row = a_minutely()
+        # The tick another worker already committed.
+        tick = OxScheduleTick.objects.create(
+            schedule_name=f"db:{row.pk}",
+            scheduled_for=tz.now().replace(second=0, microsecond=0),
+            created_at=tz.now(),
+        )
+        assert tick.pk
+        with caplog.at_level(logging.ERROR, logger="django_ox"):
+            worker.dispatch_schedules()
+        assert not [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "schedule_dispatch_error"
+        ], "a lost race was reported as a failure"

@@ -2170,9 +2170,19 @@ class Worker:
                 # A one-shot trigger whose instant has not arrived. Nothing
                 # is due and nothing is recorded, so it stays a candidate.
                 continue
-            due.append(
-                (schedule, timezone.make_aware(tick) if settings.USE_TZ else tick)
-            )
+            scheduled_for = timezone.make_aware(tick) if settings.USE_TZ else tick
+            if scheduled_for > now:
+                # A tick is the latest instant at or before now, so one in
+                # the future is not due and must not be enqueued. It can
+                # arise where a local time does not exist: on the day a
+                # zone springs forward, a wall clock of 02:30 in a
+                # one-hour-past-the-hour sequence is a time that never
+                # happens, and attaching the zone to it resolves to 03:30,
+                # which has not arrived. Enqueueing there would run the
+                # task early and stamp it with an instant that suppresses
+                # the real 03:30 tick when it comes.
+                continue
+            due.append((schedule, scheduled_for))
         if not due:
             return 0
         latest = self._latest_ticks(
@@ -2300,8 +2310,29 @@ class Worker:
                 # view can still act on it.
                 continue
             except IntegrityError:
-                # Another worker claimed this tick first; its INSERT won and
-                # ours rolled back before it enqueued anything.
+                # Almost always another worker claiming this tick first: its
+                # INSERT won and ours rolled back before it enqueued
+                # anything. But the enqueue is inside the same block, so an
+                # integrity failure raised by the task write arrives here
+                # too, and reading every one as a lost race would retry it
+                # silently for as long as it kept failing. The tick row is
+                # what a winner leaves behind, and a failing enqueue takes
+                # this pass's own row down with it, so the row's presence is
+                # what separates the two.
+                if not (
+                    OxScheduleTick.objects.using(self._db_alias)
+                    .filter(schedule_name=schedule.key, scheduled_for=scheduled_for)
+                    .exists()
+                ):
+                    logger.exception(
+                        "Schedule %s could not be dispatched this pass",
+                        schedule.name,
+                        extra={
+                            "event": "schedule_dispatch_error",
+                            "schedule": schedule.name,
+                            "worker_id": self.worker_id,
+                        },
+                    )
                 continue
             except Exception:
                 # Anything else at all. A schedule read from a row is input

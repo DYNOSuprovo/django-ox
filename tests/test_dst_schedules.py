@@ -33,9 +33,11 @@ def tasks_setting(schedules):
     }
 
 
-def run_across(monkeypatch, settings, schedules, day, start_h, end_h):
+def run_across(
+    monkeypatch, settings, schedules, day, start_h, end_h, zone="Europe/London"
+):
     """Step one UTC minute at a time and return every instant that fired."""
-    settings.TIME_ZONE = "Europe/London"
+    settings.TIME_ZONE = zone
     settings.USE_TZ = True
     settings.TASKS = tasks_setting(schedules)
     worker = Worker(backoff_initial=0)
@@ -141,6 +143,65 @@ class TestTheMissingHour:
         )
         assert len(fired) == 11, f"expected every quarter hour, got {fired}"
         assert biggest_gap(fired) == timedelta(minutes=15)
+
+
+class TestALocalTimeThatDoesNotExist:
+    """
+    On the day a zone springs forward, an hour of wall-clock labels never
+    happens. Attaching the zone to one of them resolves to an instant on
+    the far side of the gap, which has not arrived.
+
+    A tick is the latest instant at or before now, so one resolving into
+    the future is refused. Enqueueing it would run the task early and stamp
+    it with the instant of the next real tick, which the dispatch log would
+    then read as already recorded.
+    """
+
+    def test_an_interval_whose_tick_lands_in_the_gap_does_not_fire_early(
+        self, monkeypatch, settings
+    ):
+        settings.TIME_ZONE = "America/New_York"
+        settings.USE_TZ = True
+        settings.TASKS = tasks_setting(
+            {"iv": {"task": "tests.tasks.add", "every": 3600, "phase": 1800}}
+        )
+        worker = Worker(backoff_initial=0)
+        # 2025-03-09 in New York: 02:00 EST becomes 03:00 EDT, so every
+        # wall clock from 02:00 to 02:59 is a time that never happens.
+        base = dt.datetime(2025, 3, 9, 5, 0, tzinfo=dt.UTC)
+        clock = {"now": base}
+        monkeypatch.setattr(timezone, "now", lambda: clock["now"])
+        stop = base + timedelta(hours=6)
+        early = []
+        while clock["now"] < stop:
+            worker.dispatch_schedules()
+            early += list(
+                OxScheduleTick.objects.filter(
+                    scheduled_for__gt=clock["now"], task__isnull=False
+                )
+            )
+            clock["now"] += timedelta(minutes=1)
+        assert not early, (
+            "enqueued a tick before its instant: "
+            f"{[(r.schedule_name, r.scheduled_for.isoformat()) for r in early]}"
+        )
+
+    def test_the_tick_on_the_far_side_of_the_gap_still_fires(
+        self, monkeypatch, settings
+    ):
+        fired = run_across(
+            monkeypatch,
+            settings,
+            {"iv": {"task": "tests.tasks.add", "every": 3600, "phase": 1800}},
+            "2025-03-09",
+            5,
+            11,
+            zone="America/New_York",
+        )
+        labels = [f.astimezone(ZoneInfo("America/New_York")) for f in fired]
+        assert any(stamp.hour == 3 and stamp.minute == 30 for stamp in labels), (
+            f"the first tick after the gap never fired: {labels}"
+        )
 
 
 class TestTheWallClockLimitWithoutTimeZoneSupport:

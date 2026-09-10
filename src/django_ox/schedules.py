@@ -238,6 +238,35 @@ def schedule_name_collisions(backend_alias: str) -> list[tuple[str, str]]:
     ]
 
 
+def schedule_names_folding_together(backend_alias: str) -> list[tuple[str, str]]:
+    """
+    Pairs of configured schedule names that differ only by case.
+
+    The tick log's unique constraint decides identity with the column's
+    collation, not with Python's `==`. MySQL's usual `utf8mb4_0900_ai_ci`
+    is case- and accent-insensitive, so `Report` and `report` are two
+    schedules to the settings parser and one key to the constraint: their
+    anchors collide, then every tick after that, and one of them never
+    runs again with nothing raised anywhere. PostgreSQL and SQLite as
+    ordinarily configured do not fold them.
+
+    Every configured backend is read, because the tick log has no backend
+    column and one name space covers all of them.
+    """
+    seen: dict[str, str] = {}
+    clashes: list[tuple[str, str]] = []
+    tasks: dict[str, dict[str, Any]] = settings.TASKS
+    for alias in sorted(tasks):
+        raw = tasks[alias].get("OPTIONS", {}).get("SCHEDULES", {})
+        for name in sorted(raw) if isinstance(raw, dict) else []:
+            folded = name.casefold()
+            if folded in seen and seen[folded] != name:
+                clashes.append((seen[folded], name))
+            else:
+                seen.setdefault(folded, name)
+    return clashes
+
+
 def _as_interval(value: Any, prefix: str, key: str) -> timedelta:
     """
     A timedelta from a timedelta or a number of seconds.

@@ -79,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same instants from the definition alone, which is what keeps dispatch
   leaderless. `every` must be at least one second, because the dispatch loop
   cannot honour anything faster.
+- `django_ox.E009` and `django_ox.W002` report two configured schedule names
+  that differ only by case. Tick identity is decided by the column's
+  collation, and MySQL's default folds case, so the two share one key: their
+  ticks collide and one schedule stops running with nothing raised. Refused on
+  MySQL, warned about elsewhere.
 - `django_ox.W001` reports `USE_TZ = False` together with a `TIME_ZONE` that
   puts the clock back once a year. A tick's time is stored as a wall clock
   there, so one label covers both passes of the repeated hour: an interval
@@ -88,6 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A task row and its tick row commit together, which is what makes a due tick
   enqueue once, so they must share a database. Routing the app to a single
   non-default database is supported and now covered by tests.
+- A tick whose instant has not arrived is not enqueued. On the day a zone
+  springs forward an hour of wall-clock labels never happens, and attaching
+  the zone to one of them resolves to an instant on the far side of the gap:
+  an interval schedule crossing it enqueued a task early and stamped it with
+  the next real tick's instant, which then read as already recorded.
 - `OPTIONS["SCHEDULE_SOURCE"]`, a dotted path to the class a worker asks for
   its active schedules. It defaults to reading `OPTIONS["SCHEDULES"]`, so
   settings-declared schedules are unchanged. A source is asked once per

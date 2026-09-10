@@ -758,3 +758,44 @@ class TestACustomSourceIsHeldToTheSameTickCheck:
         }
         worker = Worker(backoff_initial=0)
         assert worker.dispatch_schedules() == 1
+
+
+@pytest.mark.django_db
+class TestNamesThatFoldTogether:
+    """
+    The tick log's unique constraint decides identity with its column's
+    collation, not with Python's `==`. MySQL's default folds case, so two
+    schedule names differing only by case are one key there: their anchors
+    collide, then every tick, and one schedule stops running with nothing
+    raised. It is refused on MySQL and named everywhere else, because the
+    same settings deployed against MySQL would starve one of the two.
+    """
+
+    def _two(self, settings, first, second):
+        settings.TASKS = {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {
+                    "SCHEDULES": {
+                        first: {"task": "tests.tasks.add", "cron": "* * * * *"},
+                        second: {"task": "tests.tasks.add", "cron": "* * * * *"},
+                    }
+                },
+            }
+        }
+        return [e.id for e in default_task_backend.check()]
+
+    def test_names_differing_only_by_case_are_reported(self, settings):
+        from django.db import connection
+
+        ids = self._two(settings, "Report", "report")
+        expected = (
+            "django_ox.E009" if connection.vendor == "mysql" else "django_ox.W002"
+        )
+        assert expected in ids, ids
+
+    def test_names_differing_by_more_than_case_are_not(self, settings):
+        ids = self._two(settings, "report-daily", "report-hourly")
+        assert "django_ox.E009" not in ids
+        assert "django_ox.W002" not in ids

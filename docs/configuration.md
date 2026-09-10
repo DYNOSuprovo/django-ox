@@ -224,6 +224,12 @@ alert are on the
 - `django_ox.E007`: a `SCHEDULABLE_TASKS` entry is invalid (task or form
   path does not import, the form is not an `ArgsForm`, unknown keys, or a
   key already registered for a different task).
+- `django_ox.E009` / `django_ox.W002`: two configured schedule names differ
+  only by case. The tick log decides identity with its column's collation, so
+  on a case-insensitive one, MySQL's default among them, the two share a key:
+  their ticks collide and one schedule stops running. Refused on MySQL,
+  reported as a warning elsewhere, because the same settings deployed against
+  MySQL would starve one of the two.
 - `django_ox.W001`: `USE_TZ` is off and `TIME_ZONE` puts the clock back once
   a year. Tick times are stored against the wall clock, so the repeated hour
   has one label for two instants: an interval schedule loses about half its

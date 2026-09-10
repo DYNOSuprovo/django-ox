@@ -248,6 +248,34 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E008",
                 )
             )
+        # Names that differ only by case are one key to a case-insensitive
+        # collation, which is MySQL's default. On MySQL the collision is
+        # real and silent, so it is refused; elsewhere it is a portability
+        # hazard worth naming, because the same settings deployed against
+        # MySQL would starve one of the two schedules.
+        from django.db import connections as _connections
+        from django.db import router as _router
+
+        from .models import OxScheduleTick as _Tick
+        from .schedules import schedule_names_folding_together
+
+        folding = schedule_names_folding_together(self.alias)
+        if folding:
+            pairs = ", ".join(f"{a!r} and {b!r}" for a, b in folding)
+            tick_db = _router.db_for_write(_Tick)
+            on_mysql = _connections[tick_db].vendor == "mysql"
+            message = (
+                f"Schedule names differing only by case: {pairs}. The schedule "
+                "tick log decides identity with its column's collation, so on a "
+                "case-insensitive one these share a key: their ticks collide and "
+                "one schedule stops running."
+            )
+            hint = "Give each schedule a name that differs by more than case."
+            errors.append(
+                checks.Error(message, hint=hint, id="django_ox.E009")
+                if on_mysql
+                else checks.Warning(message, hint=hint, id="django_ox.W002")
+            )
         # A tick's identity is (schedule name, tick time), and under
         # USE_TZ=False that time is stored as a naive wall clock. Where the
         # clock goes back, one label covers two instants, so the second is
