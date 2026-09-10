@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from django import forms
+from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.utils.module_loading import autodiscover_modules, import_string
 
@@ -168,14 +169,35 @@ def schedulable(
     return decorate
 
 
+def _register_from_settings() -> None:
+    """
+    Apply every backend's SCHEDULABLE_TASKS.
+
+    The system check reads this option as well, but a check runs under
+    `manage.py` and nowhere else. A worker started with `--skip-checks`,
+    and every WSGI or ASGI process, would otherwise hold a registry that
+    only the decorator had filled, and a row naming a key declared in
+    settings would be skipped as unknown by the deployment that declared
+    it.
+    """
+    for alias, config in (getattr(settings, "TASKS", None) or {}).items():
+        options = (config or {}).get("OPTIONS") or {}
+        if "SCHEDULABLE_TASKS" in options:
+            kinds_from_options(options, alias)
+
+
 def _discover() -> None:
+    """Fill the registry from both channels before anyone reads it."""
     global _discovered
-    if _discovered:
-        return
-    # Set first: an app whose tasks module raises would otherwise be
-    # re-imported on every lookup, turning one failure into many.
-    _discovered = True
-    autodiscover_modules("tasks")
+    if not _discovered:
+        # Set first: an app whose tasks module raises would otherwise be
+        # re-imported on every lookup, turning one failure into many.
+        _discovered = True
+        autodiscover_modules("tasks")
+    # Every call, not only the first. Registration is idempotent for an
+    # identical kind, and an entry that cannot be built has to keep saying
+    # so rather than leaving one silent gap for the rest of the process.
+    _register_from_settings()
 
 
 def kinds() -> dict[str, ScheduleKind]:

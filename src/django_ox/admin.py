@@ -384,9 +384,10 @@ class OxScheduleAdmin(_ScheduleAdmin):
     ) -> None:
         # One marker bump for the batch rather than one per row: workers only
         # need to learn that something moved.
-        with transaction.atomic():
-            queryset.delete()
-            stored._touch_change_row()
+        alias = stored.schedule_db_alias()
+        with transaction.atomic(using=alias):
+            queryset.using(alias).delete()
+            stored._touch_change_row(alias)
 
     def _set_enabled(
         self,

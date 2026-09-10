@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from django_ox.models import OxSchedule, OxScheduleChange
 from django_ox.registry import ArgsForm, ScheduleKind, register
-from django_ox.stored import create_schedule, update_schedule
+from django_ox.stored import boundary_digest, create_schedule, update_schedule
 
 from . import tasks
 
@@ -134,6 +134,40 @@ class TestTriggerValidation:
         with pytest.raises(ValidationError) as caught:
             a_cron(start_time=now, end_time=now - timedelta(hours=1))
         assert "end_time" in caught.value.message_dict
+
+
+class TestTheDigestSurvivesTheRoundTrip:
+    """
+    The digest has to name what the column holds, not what the caller passed.
+
+    A boundary digest is written by one process and recomputed by another
+    from a row it read. If the two disagree the schedule reads as
+    permanently stale: dispatch declines its tick and the boundary is moved
+    onto the current timing, so the schedule loses the run it was created
+    for.
+    """
+
+    def test_the_model_s_own_enum_digests_the_same_as_the_column(self):
+        row = a_cron(trigger=OxSchedule.Trigger.CRON)
+        assert row.boundary_for == boundary_digest(OxSchedule.objects.get(pk=row.pk)), (
+            "a schedule created with the enum reads as stale forever"
+        )
+
+    def test_an_interval_given_as_a_string_digests_the_same_as_the_column(self):
+        row = a_cron(
+            name="every-minute", trigger="interval", cron="", every_seconds="60"
+        )
+        assert row.boundary_for == boundary_digest(OxSchedule.objects.get(pk=row.pk))
+
+    def test_a_no_op_string_edit_is_not_a_retime(self):
+        # The shape a JSON body or an env var produces. Reading "60" as a
+        # change from 60 moves the boundary past a tick that was already
+        # due, and that tick never fires.
+        row = a_cron(name="every-minute", trigger="interval", cron="", every_seconds=60)
+        before = row.start_time
+        update_schedule(row, every_seconds="60")
+        row.refresh_from_db()
+        assert row.start_time == before, "a no-op edit moved the activation boundary"
 
 
 class TestTheBoundary:

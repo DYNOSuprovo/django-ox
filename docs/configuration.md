@@ -223,6 +223,11 @@ alert are on the
 - `django_ox.E007`: a `SCHEDULABLE_TASKS` entry is invalid (task or form
   path does not import, the form is not an `ArgsForm`, unknown keys, or a
   key already registered for a different task).
+- `django_ox.E008`: a database router sends the django-ox models to more
+  than one database. A task row and its schedule tick row are written in one
+  transaction, which is what makes a due tick enqueue once, so they have to
+  live on the same database. Route the `django_ox` app to a single one; it
+  need not be the default.
 - `django_ox.E010`: `LOCK_TIMEOUT`, `BACKOFF_INITIAL` or `BACKOFF_MAX` is not a
   positive, finite number of seconds. The worker reads all three, so the check stops a bad value at deploy time.
 

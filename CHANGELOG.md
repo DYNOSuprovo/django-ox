@@ -79,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same instants from the definition alone, which is what keeps dispatch
   leaderless. `every` must be at least one second, because the dispatch loop
   cannot honour anything faster.
+- `django_ox.E008` reports django-ox models routed to more than one database.
+  A task row and its tick row commit together, which is what makes a due tick
+  enqueue once, so they must share a database. Routing the app to a single
+  non-default database is supported and now covered by tests.
 - `OPTIONS["SCHEDULE_SOURCE"]`, a dotted path to the class a worker asks for
   its active schedules. It defaults to reading `OPTIONS["SCHEDULES"]`, so
   settings-declared schedules are unchanged. A source is asked once per

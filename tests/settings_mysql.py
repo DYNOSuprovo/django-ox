@@ -47,7 +47,8 @@ if "OX_TEST_DB_NAME" in os.environ:
     DATABASES["default"]["NAME"] = os.environ["OX_TEST_DB_NAME"]
 
 # The routed-write tests need a second alias. SQLite whatever the primary
-# engine is: they exercise Django's routing, not anything engine-specific.
+# engine is: they exercise Django's transaction and routing plumbing, not
+# anything engine-specific.
 DATABASES["alt"] = {
     "ENGINE": "django.db.backends.sqlite3",
     "NAME": BASE_DIR / "alt.sqlite3",  # noqa: F405

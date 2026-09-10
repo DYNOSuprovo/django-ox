@@ -19,7 +19,7 @@ import hashlib
 import logging
 import time
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from django.core.exceptions import (
     ImproperlyConfigured,
@@ -27,7 +27,7 @@ from django.core.exceptions import (
     ValidationError,
 )
 from django.db import DatabaseError, connections, router, transaction
-from django.db.models import F
+from django.db.models import F, Field
 from django.utils import timezone
 
 from . import registry
@@ -61,10 +61,32 @@ TIMING_FIELDS = frozenset({"trigger", "cron", "every_seconds", "phase_seconds"})
 BOUNDARY_FIELDS = frozenset(TIMING_FIELDS)
 
 
+def stored_value(schedule: OxSchedule, field: str) -> Any:
+    """
+    A field's value as the database will hold it, whatever the caller passed.
+
+    The digest and the retime comparison both have to survive a round trip,
+    and an attribute in memory need not match the column yet. `trigger` may
+    hold an `OxSchedule.Trigger` member, whose `repr` is the member and
+    whose column is the value; `every_seconds` may hold `"60"` from JSON or
+    a form, whose column is `60`. Comparing or hashing either as it stands
+    reads an unchanged schedule as retimed, and writes a boundary digest
+    that nothing recomputed from a row can ever match.
+
+    `to_python` is what the field itself would do on the way in. A str
+    subclass is collapsed to `str` as well, because `to_python` returns a
+    choices member unchanged and only its `repr` gives it away.
+    """
+    model_field = cast("Field[Any, Any]", OxSchedule._meta.get_field(field))
+    value = model_field.to_python(getattr(schedule, field))
+    return str(value) if isinstance(value, str) else value
+
+
 def boundary_digest(schedule: OxSchedule) -> str:
     """A digest of the columns the boundary was set for."""
     material = "|".join(
-        f"{field}={getattr(schedule, field)!r}" for field in sorted(BOUNDARY_FIELDS)
+        f"{field}={stored_value(schedule, field)!r}"
+        for field in sorted(BOUNDARY_FIELDS)
     )
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
@@ -183,9 +205,24 @@ def check_permission(schedule: OxSchedule, user: Any) -> None:
         )
 
 
-def _touch_change_row() -> None:
+def schedule_db_alias() -> str:
+    """
+    The database the stored schedules are written through.
+
+    Named once and threaded, rather than left to each statement's own
+    routing. A transaction opened without it runs on the default
+    connection while the row it means to lock is read through the routed
+    one, so the lock holds nothing and the row write and the marker bump
+    are not atomic. On the default router the two are the same database
+    and the omission is invisible, which is why it has to be explicit.
+    """
+    return str(router.db_for_write(OxSchedule))
+
+
+def _touch_change_row(using: str | None = None) -> None:
     """Tell every worker that the stored schedules moved."""
-    OxScheduleChange.objects.update_or_create(
+    alias = using or schedule_db_alias()
+    OxScheduleChange.objects.using(alias).update_or_create(
         id=1, defaults={"changed_at": timezone.now()}
     )
 
@@ -201,12 +238,14 @@ def create_schedule(*, user: Any = None, **fields: Any) -> OxSchedule:
     now = timezone.now()
     fields.setdefault("start_time", now)
     schedule = OxSchedule(created_at=now, updated_at=now, **fields)
-    schedule.boundary_for = boundary_digest(schedule)
     schedule.full_clean(exclude=["boundary_for", "created_at", "updated_at"])
+    # After the clean, so the digest is over the values that will be stored.
+    schedule.boundary_for = boundary_digest(schedule)
     check_permission(schedule, user)
-    with transaction.atomic():
-        schedule.save()
-        _touch_change_row()
+    alias = schedule_db_alias()
+    with transaction.atomic(using=alias):
+        schedule.save(using=alias)
+        _touch_change_row(alias)
     return schedule
 
 
@@ -229,21 +268,21 @@ def update_schedule(
     # in-memory value is the new one and a re-enable through the change form
     # would never look like a transition.
     now = timezone.now()
-    with transaction.atomic():
+    alias = schedule_db_alias()
+    with transaction.atomic(using=alias):
         # The row under its own lock, and the values read from it. Reading
         # them outside the transaction and then saving every field off the
         # instance let a caller holding a stale copy write an old
         # start_time over a newer one, undoing a resume someone else had
         # just made.
-        current = _lock_row(schedule.pk, router.db_for_write(OxSchedule))
+        current = _lock_row(schedule.pk, alias)
         if current is None:
             raise OxSchedule.DoesNotExist(f"Schedule {schedule.pk} no longer exists.")
         # The values as the database holds them, before this call's changes.
         # Taken from the locked row rather than from the caller's instance,
         # which may be minutes old.
-        previous = {
-            field: getattr(current, field) for field in (*BOUNDARY_FIELDS, "enabled")
-        }
+        previous = {field: stored_value(current, field) for field in TIMING_FIELDS}
+        previously_enabled = current.enabled
         stale_boundary = current.boundary_for != boundary_digest(current)
 
         # Only the fields this call was given. Everything else keeps the
@@ -252,19 +291,20 @@ def update_schedule(
             setattr(current, name, value)
 
         retimed = any(
-            getattr(current, field) != previous[field] for field in TIMING_FIELDS
+            stored_value(current, field) != previous[field] for field in TIMING_FIELDS
         )
-        resumed = current.enabled and not previous["enabled"]
+        resumed = current.enabled and not previously_enabled
         # stale_boundary: the timing had already changed by a route that did
         # not move the boundary, so it is stale whatever this call changes.
         if retimed or resumed or stale_boundary:
             current.start_time = now
-        current.boundary_for = boundary_digest(current)
         current.updated_at = now
         current.full_clean(exclude=["boundary_for", "created_at", "updated_at"])
+        # After the clean, so the digest is over the values that will be stored.
+        current.boundary_for = boundary_digest(current)
         check_permission(current, user)
-        current.save()
-        _touch_change_row()
+        current.save(using=alias)
+        _touch_change_row(alias)
     # The caller's instance is the one they will read from next.
     schedule.refresh_from_db()
     return schedule
@@ -277,9 +317,10 @@ def delete_schedule(schedule: OxSchedule) -> None:
     A plain delete() leaves every running worker holding the schedule until
     something else changes, enqueueing and rolling back once a pass.
     """
-    with transaction.atomic():
-        schedule.delete()
-        _touch_change_row()
+    alias = schedule_db_alias()
+    with transaction.atomic(using=alias):
+        schedule.delete(using=alias)
+        _touch_change_row(alias)
 
 
 def schedule_to_trigger_config(schedule: OxSchedule) -> dict[str, Any]:
@@ -349,7 +390,7 @@ class DatabaseScheduleSource:
         #: When the rows were last read in full, on the monotonic clock.
         #: None means never.
         self._last_read: float | None = None
-        self._db_alias = router.db_for_write(OxSchedule)
+        self._db_alias = schedule_db_alias()
         #: How often to read every row regardless of the change marker.
         raw_interval = options.get("SCHEDULE_RECONCILE_INTERVAL", 60.0)
         try:
@@ -444,7 +485,7 @@ class DatabaseScheduleSource:
                     OxSchedule.objects.using(self._db_alias).filter(pk=pk).update(
                         start_time=now, boundary_for=digest
                     )
-                    _touch_change_row()
+                    _touch_change_row(self._db_alias)
                 logger.info(
                     "Moved schedule %s to a boundary matching its timing",
                     pk,

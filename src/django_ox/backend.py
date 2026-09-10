@@ -217,6 +217,36 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E007",
                 )
             )
+        # One database, or the constraint is not a coordination mechanism.
+        # A due tick is enqueued once because the task row and the tick row
+        # commit or roll back together; two connections cannot do that, and
+        # a tick committed without its task is one nothing will run again.
+        # The default router sends everything to one database, so this only
+        # ever fires on a project that wrote its own.
+        from django.db import router
+
+        from .models import OxSchedule, OxScheduleTick, OxTask
+
+        routed = {
+            model._meta.object_name: router.db_for_write(model)
+            for model in (OxTask, OxScheduleTick, OxSchedule)
+        }
+        if len(set(routed.values())) > 1:
+            errors.append(
+                checks.Error(
+                    "django-ox models are routed to more than one database: "
+                    + ", ".join(
+                        f"{name} to {alias!r}" for name, alias in routed.items()
+                    )
+                    + ".",
+                    hint=(
+                        "A task row and its schedule tick row must commit in one "
+                        "transaction, so they must live on one database. Route "
+                        "the django_ox app to a single database."
+                    ),
+                    id="django_ox.E008",
+                )
+            )
         from .timeouts import lease_timing_problems, task_timeout_problems
 
         for problem in lease_timing_problems(self.options):

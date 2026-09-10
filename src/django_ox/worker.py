@@ -2228,6 +2228,15 @@ class Worker:
                     # enqueue() saves and fires task_enqueued before any outer
                     # rollback could unwind it, which is why the constraint
                     # has to decide before the enqueue and not after.
+                    #
+                    # Through the alias this transaction was opened on. The
+                    # INSERT and the enqueue have to commit or roll back
+                    # together: that is what makes the constraint the
+                    # coordination mechanism. Left to its own routing this
+                    # row could land outside the transaction, and a tick
+                    # recorded without its task is a tick nothing will run
+                    # again. django_ox.E008 checks that the two models
+                    # resolve to one database.
                     tick_row = OxScheduleTick.objects.using(self._db_alias).create(
                         schedule_name=current.key,
                         scheduled_for=scheduled_for,

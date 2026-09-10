@@ -59,7 +59,9 @@ DATABASES = {
 # model must live on one database, but that database need not be the default
 # one: with a single alias configured, a statement pinned to the write alias
 # and one that routes itself are the same connection, and the difference the
-# claim protocol depends on cannot be observed.
+# claim protocol depends on cannot be observed. The same goes for a
+# transaction opened without an alias: it runs on the default connection
+# while the row it means to lock is read through the routed one.
 DATABASES["alt"] = {
     "ENGINE": "django.db.backends.sqlite3",
     "NAME": BASE_DIR / "alt.sqlite3",

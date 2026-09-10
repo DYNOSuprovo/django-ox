@@ -172,3 +172,45 @@ def test_check_reports_a_bad_schedulable_entry(settings):
         }
     }
     assert [e.id for e in default_task_backend.check()] == ["django_ox.E007"]
+
+
+class TestSettingsReachEveryProcess:
+    """
+    A key declared in settings has to exist without a system check running.
+
+    Checks run under `manage.py check` and `manage.py` command startup. A
+    worker started with `--skip-checks`, and every WSGI or ASGI process,
+    reads the registry without ever having run one. If settings were
+    applied only by the check, those processes would hold a registry the
+    decorator alone had filled, and a stored row naming a settings-declared
+    key would be skipped as unknown by the deployment that declared it.
+    """
+
+    def _settings(self, settings, entry):
+        settings.TASKS = {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {"SCHEDULABLE_TASKS": entry},
+            }
+        }
+
+    def test_a_key_is_registered_without_any_check_running(self, monkeypatch, settings):
+        monkeypatch.setattr("django_ox.registry._registry", {})
+        monkeypatch.setattr("django_ox.registry._discovered", True)
+        self._settings(settings, {"reports.daily": "tests.tasks.add"})
+        # No call to check() anywhere above this line.
+        assert "reports.daily" in kinds()
+        assert get("reports.daily").task == tasks.add
+
+    def test_a_broken_entry_keeps_raising_rather_than_leaving_a_gap(
+        self, monkeypatch, settings
+    ):
+        # A cached failure would leave one silent hole in the registry for
+        # the life of the process, which is the shape being avoided.
+        monkeypatch.setattr("django_ox.registry._registry", {})
+        monkeypatch.setattr("django_ox.registry._discovered", True)
+        self._settings(settings, {"k": {"task": "tests.tasks.nope"}})
+        for _ in range(2):
+            with pytest.raises(ImproperlyConfigured, match="cannot import task"):
+                kinds()
