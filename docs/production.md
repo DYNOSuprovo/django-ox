@@ -171,7 +171,7 @@ concurrent workers safe:
   the head of the queue; [PostgreSQL, MySQL or SQLite](#postgresql-mysql-or-sqlite)
   says where to spend concurrency there.
 - **Recurring schedules need no dedicated node.** Every worker dispatches;
-  a unique constraint guarantees each tick fires once. See
+  a unique constraint stops two workers enqueueing the same tick. See
   [Recurring tasks](recurring-tasks.md#many-workers-one-tick).
 
 Workers can also be split by queue: run

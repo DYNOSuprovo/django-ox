@@ -1,0 +1,316 @@
+# Schedules in the database
+
+Settings-declared schedules deploy with your code. That is the default and it
+suits most schedules.
+
+Sometimes it doesn't. An operator needs to pause a job at 2am. A support team
+adjusts a report's timing without waiting for a release. Someone who cannot
+deploy still has to be able to stop something. For those cases django-ox reads
+schedules from a database table instead, editable in the Django admin.
+
+The trade is worth being clear about. A settings entry is reviewed and versioned.
+A row is neither. What follows is mostly about keeping that difference from
+becoming a problem.
+
+## Setting it up
+
+Three steps.
+
+**1. Say which tasks may be scheduled.** A row cannot name a task you haven't
+exposed. Put `@schedulable` above `@task`:
+
+```python
+from django.tasks import task
+from django_ox.registry import schedulable
+
+
+@schedulable("reports.daily")
+@task
+def daily_report(): ...
+```
+
+Or declare them in settings, which is the only channel `manage.py check` can
+validate:
+
+```python
+"OPTIONS": {
+    "SCHEDULABLE_TASKS": {"reports.daily": "reports.tasks.daily_report"},
+}
+```
+
+**2. Point the backend at the database source:**
+
+```python
+TASKS = {
+    "default": {
+        "BACKEND": "django_ox.backend.OxBackend",
+        "OPTIONS": {
+            "SCHEDULE_SOURCE": "django_ox.stored.DatabaseScheduleSource",
+        },
+    }
+}
+```
+
+**3. Run `manage.py migrate django_ox`.**
+
+Schedules now appear in the admin under django-ox. Nothing else changes: the
+worker is the same process, there is still no scheduler to deploy, and
+`SCHEDULES` entries keep working if you use both.
+
+## What a person with admin access can do
+
+They can pick a task from the list you exposed, set its timing and arguments,
+enable it, disable it, and run it once immediately.
+
+They cannot name a task you haven't exposed. The field is a list, not a text box,
+and a hand-written POST is refused too.
+
+That is the unusual part. In `django-celery-beat` the `PeriodicTask` model puts
+no `choices` or validators on its task field and defines no `clean()`, so
+`objects.create(task=...)` accepts anything; `django-q2` resolves its `func`
+column with `pydoc.locate` and calls the result. In both, change permission on
+the schedule table is close to permission to run arbitrary code. Here the code
+decides what is reachable and the row only picks from it.
+
+You can narrow it further. A registry entry may require a permission of its own:
+
+```python
+@schedulable("payroll.run", permission="payroll.run_payroll")
+@task
+def run_payroll(): ...
+```
+
+Anyone without `payroll.run_payroll` can see that schedule and cannot change it,
+whatever their permissions on the schedule table.
+
+Arguments get validated if you say how:
+
+```python
+from django import forms
+from django_ox.registry import ArgsForm, schedulable
+
+
+class DailyArgs(ArgsForm):
+    region = forms.CharField()
+
+
+@schedulable("reports.daily", form=DailyArgs)
+@task
+def daily_report(region): ...
+```
+
+An unknown argument is rejected rather than ignored, and a number in a text field
+is rejected rather than quietly turned into a string.
+
+## When a schedule fires
+
+This is the part worth reading properly. A stored schedule can be changed while
+workers are running, and what should happen isn't always obvious.
+
+Every rule below follows from one idea: **a tick fires only if it falls at or
+after the schedule's `start_time`.**
+
+That field is the activation boundary. It is set when the row is created. A few
+events move it forward, and each of those is a rule below.
+
+### A new schedule waits for its next tick
+
+Create a daily 02:00 schedule at 15:00 and it first runs at 02:00 tomorrow. It
+does not run immediately, because 02:00 today passed before the schedule
+existed.
+
+Create a minutely schedule at 14:37:41 and it first runs at 14:38:00, not
+14:37:00, for the same reason.
+
+The boundary is written when the row is created, not when a worker first notices
+it. So a schedule created at 12:00 and first due at 12:05 still runs, even if
+every worker was down until 12:06.
+
+### Retiming reschedules from the moment you change it
+
+Change a schedule from `0 2 * * *` to `0 3 * * *` at 15:00. It next runs at 03:00
+tomorrow. It does **not** run at 03:00 today, even though that time has passed
+and the new expression matches it: at 03:00 today, nobody could have expected a
+run.
+
+The same rule covers stranger cases. Retimed from 02:00 to 16:00 at 15:00, it
+runs at 16:00 today, an hour later, because that tick is still ahead of the
+change.
+
+Changing what a schedule *runs* does not change *when* it runs. Editing its arguments leaves the boundary alone. This matters: if
+every edit re-anchored the schedule, one edited more often than its own period
+would never run at all.
+
+A task already enqueued keeps the arguments it was enqueued with. Edits apply to
+the next tick.
+
+### Pausing does not build up a backlog
+
+Disable a schedule and it stops. Enable it again and it resumes from now.
+Anything that came due while it was disabled does not run.
+
+That is deliberate, and it differs from some systems you may know. Kubernetes
+documents that unsuspending a CronJob with no starting deadline schedules what
+was missed, and Quartz applies its misfire instruction on resume, which for a
+cron trigger fires once by default. Temporal takes our side and tells you to
+backfill deliberately if you wanted those runs.
+
+We take Temporal's. The point of pausing is that things stop, and a resume that
+fires everything you paused through fails at the same moment, one step later.
+
+If you did want those runs, run them yourself. There is no backfill command.
+
+### After downtime, only the most recent tick runs
+
+If every worker was down across several ticks, the latest one runs on recovery
+and the older ones are skipped. A nightly job still runs after an unlucky deploy.
+A weekend of downtime on a five-minute schedule does not replay hundreds of
+runs.
+
+Tasks should be safe to run late for the same reason they should be safe to run
+twice.
+
+### Dropping a tick that is too late to be useful
+
+Some jobs are worse than useless when they are hours late. A 09:00 standup
+reminder at 14:00 is noise.
+
+Set a starting deadline in seconds and a tick later than that is dropped instead
+of run:
+
+```python
+from django_ox.stored import create_schedule
+
+create_schedule(
+    name="standup-reminder",
+    task_key="reminders.standup",
+    trigger="cron",
+    cron="0 9 * * 1-5",
+    starting_deadline_seconds=1800,
+)
+```
+
+The default is no deadline, which is what settings-declared schedules have always
+done: run however late.
+
+A dropped tick logs `schedule_tick_dropped` with how late it was, so you can
+alert on it. Most schedulers drop late runs silently, and that silence is the
+part people complain about.
+
+### An edit takes effect immediately, even mid-dispatch
+
+Change a schedule one second before a worker was going to fire it and the worker
+uses the change. Disable it and it does not fire. Retime it and the tick it was
+about to record is no longer one this schedule wants, so it is not recorded.
+Change its arguments and the task that runs gets the new ones.
+
+A worker reads the schedules every second or so, but it does not decide from
+what it read. Inside the transaction that would record the tick, it locks the
+row, reads it, and works out from that row whether this exact tick is still due.
+So the answer comes from the schedule as it stands, not from a copy of it, and
+that holds for a change made any way at all, including a bulk update that runs
+no application code.
+
+Already-enqueued tasks are not cancelled. An edit applies to the next tick.
+
+One limit worth knowing. A schedule carries the timing its boundary was set
+for, so a retime done with `queryset.update()` or a fixture is noticed: the tick
+from the old definition does not fire, and the boundary moves onto the new
+timing at the next pass. Pausing and resuming that way is **not** noticed,
+because the row ends with exactly the values it started with and nothing can see
+that it went anywhere in between. Use `update_schedule` to pause and resume, or
+the admin, which calls it.
+
+### Renaming is safe
+
+A schedule's name is a label. What its ticks are recorded against is the row
+itself, so renaming one keeps its history and cannot make it run twice while
+workers hold different views of the name.
+
+One consequence: a settings-declared schedule may not be named with a `db:`
+prefix, which is reserved for exactly this. `manage.py check` refuses it.
+
+## Writing schedules from code
+
+The admin is one way in. `django_ox.stored` is the other, and it is what the
+admin itself calls:
+
+```python
+from django_ox.stored import create_schedule, update_schedule
+
+schedule = create_schedule(
+    name="nightly-report",
+    task_key="reports.daily",
+    trigger="cron",
+    cron="0 2 * * *",
+    arguments={"region": "emea"},
+)
+
+update_schedule(schedule, cron="0 3 * * *")
+```
+
+Use these rather than `OxSchedule.objects.create()`. Django's `save()` does not
+run model validation, so a direct write skips the checks, leaves the activation
+boundary set for the old timing, and doesn't tell workers the row moved. A
+schedule written that way is skipped and logged at dispatch rather than trusted.
+
+`update_schedule` and `create_schedule` take an optional `user=`, and enforce any
+per-entry permission when you pass one.
+
+## Coming from django-celery-beat
+
+The shape is familiar. The differences that will surprise you:
+
+| | django-celery-beat | django-ox |
+| --- | --- | --- |
+| What a row names | any registered task, free text | a key you exposed in code |
+| Intervals | measured from the last run | counted from a fixed instant |
+| Pause and resume | depends how you paused; one path fires on resume | never fires what was missed |
+| Retiming | evaluated against the old `last_run_at` | reschedules from the moment of the change |
+| Scheduler | one beat process, and only one | every worker, coordinated by a unique constraint |
+| Bulk `update()` | needs `PeriodicTasks.update_changed()` by hand | detected, because the check is derived from the row |
+
+`manage.py ox_import_beat_schedules` reads your existing table and prints the
+registry entries and `create_schedule` calls it would take. It writes nothing:
+retiming production is a decision, so you read the output, edit it and apply it
+yourself.
+
+The interval difference is the one to watch. `every=timedelta(minutes=90)` fires
+at 00:00, 01:30, 03:00 and so on, whatever time you created it. Celery would
+measure ninety minutes from the last run. Use `phase` to shift the sequence if
+the alignment matters.
+
+## What this costs
+
+Worth knowing before you turn it on:
+
+- **A row is unreviewed input.** Someone with admin access can retime a
+  production job without anyone seeing a diff. The registry limits *what* they
+  can run, not *when*.
+- **An edit stops the old tick immediately**; the new timing is used from the
+  next dispatch pass, about a second later.
+- **A change made without `django_ox.stored`**, a bulk update, a fixture or a
+  data migration, is found within a minute rather than a second. Nothing about
+  such a write tells a worker to look. Set
+  `OPTIONS["SCHEDULE_RECONCILE_INTERVAL"]` if you want that sooner; it is one
+  indexed read of a small table.
+- **One extra query per pass.** Workers read a single row to learn whether
+  anything changed, and re-read the schedules only when it did.
+- **A broken row is skipped, not fatal.** One that no longer validates is logged
+  and ignored so the others keep running. Watch for `schedule_row_skipped`.
+- **`manage.py check` cannot see rows.** Checks run before `migrate`, so a bad
+  schedule in the database is a log line, not a start-up error. Settings-declared
+  schedules still fail fast.
+
+## Monitoring
+
+The events these schedules emit, all listed with the rest on the [monitoring](monitoring.md) page:
+
+| Event | Meaning |
+| --- | --- |
+| `schedule_dispatched` | A tick enqueued its task. |
+| `schedule_tick_dropped` | A tick was past its starting deadline. Carries `late_seconds`. |
+| `schedule_row_skipped` | A row could not be used. Carries `reason`. |
+
+`schedule_row_skipped` is the one to alert on. It usually means a task key was
+removed from the code while a row still names it.

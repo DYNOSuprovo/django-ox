@@ -53,6 +53,7 @@ nav:
   - Home: index.md
   - Configuration: configuration.md
   - Recurring tasks: recurring-tasks.md
+  - Schedules in the database: stored-schedules.md
   - Common patterns: patterns.md
   - Migrating: migrating.md
   - Choosing a backend: choosing.md

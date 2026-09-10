@@ -252,6 +252,14 @@ The message text is not part of the contract. The keys are.
 | `task_lease_lost` | WARNING | A worker finished an attempt whose lease had already been reclaimed, so its write was dropped and no result was signalled. |
 | `lease_renew_failed` | WARNING | A lease renewal statement failed. The worker keeps going and tries again on the next interval. |
 | `schedule_dispatched` | INFO | A recurring tick enqueued its task. |
+| `schedule_tick_dropped` | WARNING | A tick was past its starting deadline and was not run. Carries `late_seconds`. Reported once per tick, not once per pass. |
+| `schedule_row_skipped` | WARNING | A stored schedule could not be used: its task key is not registered, its arguments no longer validate, or its timing does not parse. The others in the same pass still run. Carries `reason`. |
+| `schedule_dispatch_error` | ERROR | One schedule raised something unexpected. The rest of the pass continues. |
+| `schedule_dispatch_failed` | WARNING | The whole dispatch pass hit a database error. Retried on the next pass. |
+| `schedule_source_unavailable` | WARNING | The stored schedules could not be read, so the worker is running on the set it last read rather than on none. |
+| `schedule_lock_unavailable` | WARNING | A stored schedule's row could not be locked in time, so it was skipped this pass. |
+| `schedule_boundary_healed` | INFO | A stored schedule's timing had changed without its activation boundary moving, so the boundary was moved onto the current timing. Expected after a bulk update; repeated for one schedule is not. |
+| `schedule_boundary_heal_failed` | WARNING | That move failed and will be retried. |
 | `worker_error` | ERROR | The execution wrapper itself raised (an internal worker error, not a task failure). |
 | `worker_poll_failed` | WARNING | A database error ended one pass of the poll loop. The pass is abandoned and retried on the next one; the worker keeps running. A steady stream of it means the database is unreachable rather than slow. |
 | `watchdog_error` | ERROR | The timeout watchdog failed to handle one armed attempt. Every other attempt is unaffected and the thread keeps running. |
@@ -287,7 +295,10 @@ The message text is not part of the contract. The keys are.
 | `count` | `task_reclaimed` without `task_id` | How many tasks that pass reclaimed. Present only on the batch record described above. |
 | `held_by` | `task_reclaimed` | The worker that stopped refreshing the lock, from the row. `worker_id` on the same record is the reaper that noticed. Absent on the batch record, along with `task_id`, `task_path`, `queue` and `attempt`. |
 | `dropped_status` | `task_lease_lost` | Status the dropped write would have set: `SUCCESSFUL`, `FAILED` or `READY`. |
-| `schedule` | `schedule_dispatched` | Schedule name from `SCHEDULES`. |
+| `schedule` | `schedule_dispatched`, `schedule_row_skipped`, `schedule_dispatch_error`, `schedule_tick_dropped` | The schedule's name, from `SCHEDULES` or from its row. |
+| `schedule_pk` | `schedule_row_skipped`, `schedule_lock_unavailable`, `schedule_boundary_healed` | The stored schedule's row id. Absent for a settings-declared schedule, which has no row. |
+| `scheduled_for`, `late_seconds` | `schedule_tick_dropped` | The tick that was dropped, and how late it was when the deadline rejected it. |
+| `reason` | `schedule_row_skipped` | Why the row could not be used. |
 | `queues`, `concurrency` | `worker_started` | The worker's configuration. |
 | `pending` | `worker_draining` | In-flight tasks at shutdown. |
 | `processes` | `supervisor_started` | Worker processes the supervisor runs. |

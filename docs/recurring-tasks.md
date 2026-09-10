@@ -1,9 +1,15 @@
 # Recurring tasks
 
-django-ox runs cron-style schedules with no separate scheduler process. You
-declare them in settings, next to the backend they enqueue through, so they are
-versioned and deployed with your code. The database holds a dispatch log and
-nothing else. There are no schedule rows to edit by hand.
+django-ox runs cron-style schedules with no separate scheduler process.
+
+Declare them in settings and they deploy with your code, versioned alongside the
+tasks they enqueue. That is the default, and for most schedules it is the right
+one: a schedule is part of how the application behaves, and a change to it
+belongs in a review and a release like any other.
+
+Store them in the database instead and someone can retime or pause one without a
+deploy. See [Schedules in the database](stored-schedules.md) for when that is
+worth the trade and what it costs.
 
 ```python
 TASKS = {
@@ -28,7 +34,8 @@ TASKS = {
 ```
 
 Each tick enqueues an ordinary task. Workers claim it through the normal queue,
-so retries, backoff, priorities and the result store all work as usual.
+so retries, backoff, priorities and the result store all work as usual, and
+execution is at-least-once exactly as it is everywhere else.
 
 ## Schedule keys
 
@@ -45,7 +52,9 @@ Each entry accepts exactly these keys. Anything else is rejected at startup:
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `task` | yes | Dotted path to a `@task` callable, e.g. `"reports.tasks.build_report"`. |
-| `cron` | yes | Five-field cron expression or `@` shortcut, syntax below. |
+| `cron` | one of | Five-field cron expression or `@` shortcut, syntax below. |
+| `every` | one of | A fixed interval, as a `timedelta` or a number of seconds. |
+| `phase` | no | Shifts an `every` sequence. A `timedelta` or seconds, less than `every`. |
 | `args` | no | Positional arguments, as a list. Must be JSON-serializable. |
 | `kwargs` | no | Keyword arguments, as a dict. Must be JSON-serializable. |
 | `queue_name` | no | Queue override; defaults to the task's own queue. |
@@ -164,14 +173,58 @@ works like this:
 3. When workers race the same tick, exactly one `INSERT` succeeds.
 4. The losers stop at the constraint and enqueue nothing.
 
-So each tick fires exactly once, whatever the worker count, and dispatch keeps
+So a due tick is enqueued once, whatever the worker count, and dispatch keeps
 working as long as one worker is alive. Scheduling is a property of the workers
 you already run. There is nothing extra to deploy, monitor or fail over.
+
+This deduplicates the enqueue, not the execution. The task that a tick enqueues
+runs under the same at-least-once contract as every other task, so write it to
+be safe to run twice.
+
+## Fixed intervals
+
+`every` is the alternative to `cron`, for a cadence cron cannot express:
+
+```python
+"SCHEDULES": {
+    "poll-inbox": {"task": "mail.tasks.poll", "every": timedelta(minutes=90)},
+}
+```
+
+Exactly one of `cron` and `every` is required.
+
+**Interval ticks are counted from a fixed instant, not from the last run.**
+Every ninety minutes means 00:00, 01:30, 03:00 and so on, whatever time the
+schedule was deployed and whatever the workers have been doing. Nothing about
+a restart, a pause, a resume or an edit moves the sequence, because none of
+them is an input to it: every worker computes the same instants from the
+definition and the clock, which is what keeps dispatch leaderless.
+
+That is the difference from `django-celery-beat`, where an interval is measured
+from the previous run, so the sequence depends on when that run happened. If you
+want a sequence offset from the grid, say so with `phase`:
+
+```python
+# Hourly, at ten past, rather than on the hour.
+{
+    "task": "reports.tasks.hourly",
+    "every": timedelta(hours=1),
+    "phase": timedelta(minutes=10),
+}
+```
+
+`every` must be at least one second. The dispatch loop looks about once a
+second and only the latest due tick fires, so anything faster would be
+coalesced away rather than run.
+
+Interval ticks are wall-clock, exactly as cron ticks are, so the
+daylight-saving behaviour above applies to them too.
 
 ## Missed ticks
 
 **If every worker was down when a tick passed, the most recent missed tick fires
-once on recovery. Older ones are skipped.**
+once on recovery. Older ones are skipped**, so a tick can be enqueued late, and
+some ticks are deliberately never enqueued at all.
 
 A nightly job due during an unlucky deploy still runs when workers return. A
 weekend of downtime on a five-minute schedule does not replay hundreds of stale
