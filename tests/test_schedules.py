@@ -799,3 +799,64 @@ class TestNamesThatFoldTogether:
         ids = self._two(settings, "report-daily", "report-hourly")
         assert "django_ox.E009" not in ids
         assert "django_ox.W002" not in ids
+
+
+@pytest.mark.django_db
+class TestASecondAnchorDoesNotSwallowATick:
+    """
+    A schedule anchors once, however many workers first see it at once.
+
+    Which pass is the first sighting has to be asked of the log inside the
+    transaction. Taken from the snapshot read before the loop, a worker
+    whose pass began while the schedule still had no history goes on
+    believing it is the first sighting after another worker has committed
+    the anchor. It writes a second anchor, at a tick that already had a
+    boundary and should have fired, and the constraint then suppresses that
+    instant for good.
+    """
+
+    def _worker(self, settings):
+        settings.TASKS = tasks_setting(MINUTELY_ADD)
+        return Worker(backoff_initial=0)
+
+    def test_a_worker_arriving_a_tick_later_fires_rather_than_anchors(
+        self, settings, monkeypatch
+    ):
+        first = self._worker(settings)
+        second = Worker(backoff_initial=0)
+        t0 = timezone.now().replace(second=0, microsecond=0)
+
+        stale = second._latest_ticks(second.schedules, t0 - timedelta(days=1))
+        assert stale == {}, "the snapshot has to predate the anchor"
+
+        monkeypatch.setattr(timezone, "now", lambda: t0)
+        assert first.dispatch_schedules() == 0, "the first sighting must not fire"
+        monkeypatch.undo()
+        assert OxScheduleTick.objects.count() == 1
+        assert OxTask.objects.count() == 0
+
+        monkeypatch.setattr(second, "_latest_ticks", lambda schedules, since: stale)
+        monkeypatch.setattr(timezone, "now", lambda: t0 + timedelta(minutes=1))
+        second.dispatch_schedules()
+        monkeypatch.undo()
+
+        rows = list(
+            OxScheduleTick.objects.order_by("scheduled_for").values_list(
+                "scheduled_for", "task_id"
+            )
+        )
+        assert OxTask.objects.count() == 1, (
+            f"the tick after the anchor was swallowed as a second anchor: {rows}"
+        )
+
+    def test_the_uncontended_sequence_is_unchanged(self, settings, monkeypatch):
+        worker = self._worker(settings)
+        t0 = timezone.now().replace(second=0, microsecond=0)
+        monkeypatch.setattr(timezone, "now", lambda: t0)
+        assert worker.dispatch_schedules() == 0
+        monkeypatch.undo()
+        monkeypatch.setattr(timezone, "now", lambda: t0 + timedelta(minutes=1))
+        assert worker.dispatch_schedules() == 1
+        monkeypatch.undo()
+        assert OxScheduleTick.objects.count() == 2
+        assert OxTask.objects.count() == 1

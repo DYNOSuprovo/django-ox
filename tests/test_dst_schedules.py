@@ -261,6 +261,37 @@ class TestTheWallClockLimitWithoutTimeZoneSupport:
         )
         assert "django_ox.W001" in [e.id for e in default_task_backend.check()]
 
+    @pytest.mark.parametrize(
+        "zone",
+        [
+            # Permanently UTC+1, dropping to UTC+0 for Ramadan only. The
+            # window sits between midwinter and midsummer and moves about
+            # eleven days a year, so no fixed pair of sample dates finds it.
+            "Africa/Casablanca",
+            "Africa/El_Aaiun",
+            # Half an hour rather than a whole one, and southern hemisphere.
+            "Australia/Lord_Howe",
+            "Europe/London",
+            "America/New_York",
+        ],
+    )
+    def test_every_zone_that_repeats_an_hour_is_reported(self, zone, settings):
+        from django_ox.schedules import zone_repeats_an_hour
+
+        settings.TIME_ZONE = zone
+        assert zone_repeats_an_hour(), f"{zone} repeats an hour and was missed"
+
+    @pytest.mark.parametrize(
+        "zone", ["UTC", "Asia/Tokyo", "Africa/Nairobi", "Asia/Kolkata"]
+    )
+    def test_a_zone_that_never_puts_the_clock_back_is_not_reported(
+        self, zone, settings
+    ):
+        from django_ox.schedules import zone_repeats_an_hour
+
+        settings.TIME_ZONE = zone
+        assert not zone_repeats_an_hour(), f"{zone} was reported and should not be"
+
     def test_a_zone_without_a_transition_is_not_reported(self, settings):
         from django_ox.compat import default_task_backend
 

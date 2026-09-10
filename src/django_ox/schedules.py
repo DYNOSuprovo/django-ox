@@ -196,19 +196,32 @@ def zone_repeats_an_hour() -> bool:
     """
     Does the project's time zone put the clock back at any point in a year?
 
-    Sampled at midwinter and midsummer, which separates every zone that
-    observes a transition from every zone that does not. A zone whose two
-    samples agree may still have had a one-off historical change, and that
-    is not what this is for.
+    Walked a day at a time across a year and a bit, looking for any step
+    backwards. Two samples at midwinter and midsummer are not enough:
+    Morocco is permanently UTC+1 and drops to UTC+0 for Ramadan only, so
+    both samples read the same and Africa/Casablanca and Africa/El_Aaiun
+    answer no while genuinely repeating an hour every year. The window also
+    moves about eleven days a year, so no fixed pair of dates catches it.
+
+    A year and a bit from today rather than a fixed year, because a zone
+    that starts or stops observing a transition should change this answer
+    when it happens rather than when someone edits a constant.
     """
     try:
         zone = ZoneInfo(settings.TIME_ZONE)
     except (ZoneInfoNotFoundError, ValueError):
         return False
-    offsets = {
-        datetime(2025, month, 1, 12, tzinfo=zone).utcoffset() for month in (1, 7)
-    }
-    return len(offsets) > 1
+    start = datetime.now(tz=zone).replace(
+        hour=12, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+    previous = None
+    for _day in range(400):
+        offset = start.replace(tzinfo=zone).utcoffset()
+        if previous is not None and offset is not None and offset < previous:
+            return True
+        previous = offset
+        start += timedelta(days=1)
+    return False
 
 
 def schedule_name_collisions(backend_alias: str) -> list[tuple[str, str]]:
