@@ -125,8 +125,8 @@ class TestALosingWorkerAnnouncesNothing:
         # Both read the tick log before either commits, which is the whole of
         # the race: without a stale snapshot the second worker simply sees the
         # first one's committed tick and never reaches the dispatch at all.
-        stale = second._latest_ticks(now - timedelta(days=1))
-        monkeypatch.setattr(second, "_latest_ticks", lambda since: stale)
+        stale = second._latest_ticks(second.schedules, now - timedelta(days=1))
+        monkeypatch.setattr(second, "_latest_ticks", lambda schedules, since: stale)
 
         announced: list[str] = []
 

@@ -163,7 +163,11 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E001",
                 )
             )
-        from .schedules import schedule_name_collisions, schedules_from_options
+        from .schedules import (
+            schedule_name_collisions,
+            schedule_source_from_options,
+            schedules_from_options,
+        )
 
         try:
             schedules_from_options(self.options, self.alias)
@@ -173,6 +177,28 @@ class OxBackend(BaseTaskBackend):
                     str(exc),
                     hint="Fix the SCHEDULES entry of this backend's OPTIONS.",
                     id="django_ox.E002",
+                )
+            )
+        # Only when the project named a source. The default source builds
+        # from SCHEDULES and raises the same error E002 has just reported,
+        # so running this unconditionally would report every bad schedule
+        # twice under two different ids.
+        #
+        # Built, not merely imported: a source that raises on construction
+        # would otherwise start a worker that dispatches nothing and reports
+        # nothing.
+        try:
+            if self.options.get("SCHEDULE_SOURCE"):
+                schedule_source_from_options(self.options, self.alias)
+        except ImproperlyConfigured as exc:
+            errors.append(
+                checks.Error(
+                    str(exc),
+                    hint=(
+                        "Fix OPTIONS['SCHEDULE_SOURCE'], or remove it to read "
+                        "schedules from OPTIONS['SCHEDULES']."
+                    ),
+                    id="django_ox.E006",
                 )
             )
         from .timeouts import lease_timing_problems, task_timeout_problems

@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
@@ -6,7 +6,12 @@ from django.utils import timezone
 
 from django_ox.compat import default_task_backend
 from django_ox.models import OxScheduleTick, OxTask
-from django_ox.schedules import schedules_from_options
+from django_ox.schedules import (
+    IntervalTrigger,
+    SettingsScheduleSource,
+    schedule_source_from_options,
+    schedules_from_options,
+)
 from django_ox.worker import Worker
 
 from .conftest import start_worker_thread, wait_for
@@ -77,7 +82,7 @@ class TestSchedulesFromOptions:
         assert schedule.task.module_path == "tests.tasks.add"
         assert schedule.args == (1, 2)
         assert schedule.kwargs == {}
-        assert str(schedule.cron) == "* * * * *"
+        assert str(schedule.trigger) == "* * * * *"
 
     def test_queue_and_priority_overrides(self):
         (schedule,) = schedules_from_options(
@@ -100,7 +105,23 @@ class TestSchedulesFromOptions:
         "config,match",
         [
             ({"cron": "* * * * *"}, "missing 'task'"),
-            ({"task": "tests.tasks.add"}, "missing 'cron'"),
+            ({"task": "tests.tasks.add"}, "exactly one of 'cron' or 'every'"),
+            (
+                {"task": "tests.tasks.add", "cron": "* * * * *", "every": 60},
+                "exactly one of 'cron' or 'every'",
+            ),
+            ({"task": "tests.tasks.add", "every": 0.5}, "below the"),
+            ({"task": "tests.tasks.add", "every": "5m"}, "timedelta or a number"),
+            ({"task": "tests.tasks.add", "every": True}, "timedelta or a number"),
+            (
+                {"task": "tests.tasks.add", "cron": "* * * * *", "phase": 5},
+                "only applies to 'every'",
+            ),
+            (
+                {"task": "tests.tasks.add", "every": 60, "phase": 60},
+                "less than 'every'",
+            ),
+            ({"task": "tests.tasks.add", "every": 60, "phase": -1}, "at least zero"),
             ({"task": "tests.tasks.add", "cron": "not cron"}, "5 fields"),
             ({"task": "tests.tasks.add", "cron": "0 0 30 2 *"}, "never match"),
             ({"task": "tests.tasks.missing", "cron": "* * * * *"}, "cannot import"),
@@ -109,7 +130,7 @@ class TestSchedulesFromOptions:
                 "not a django.tasks Task",
             ),
             (
-                {"task": "tests.tasks.add", "cron": "* * * * *", "every": 5},
+                {"task": "tests.tasks.add", "cron": "* * * * *", "banana": 5},
                 "unknown key",
             ),
             (
@@ -174,7 +195,7 @@ class TestSchedulesFromOptions:
 
     def test_worker_init_rejects_invalid_schedules(self, settings):
         settings.TASKS = tasks_setting({"bad": {"task": "tests.tasks.add"}})
-        with pytest.raises(ImproperlyConfigured, match="missing 'cron'"):
+        with pytest.raises(ImproperlyConfigured, match="exactly one of"):
             Worker()
 
     def test_check_reports_cross_backend_name_collision(self, settings):
@@ -280,8 +301,8 @@ class TestDispatch:
 
         # Both workers read the tick log before either fires: the classic
         # two-scheduler race. The unique constraint must arbitrate.
-        stale = other._latest_ticks(timezone.now() - timedelta(days=1))
-        monkeypatch.setattr(other, "_latest_ticks", lambda since: stale)
+        stale = other._latest_ticks(other.schedules, timezone.now() - timedelta(days=1))
+        monkeypatch.setattr(other, "_latest_ticks", lambda schedules, since: stale)
 
         assert scheduled_worker.dispatch_schedules() == 1
         assert other.dispatch_schedules() == 0
@@ -378,3 +399,265 @@ class TestScheduleRunLoop:
             OxScheduleTick.objects.values_list("scheduled_for", flat=True)
         )
         assert len(scheduled_times) == len(set(scheduled_times))
+
+
+# -- where schedules come from -----------------------------------------
+
+
+class _RecordingSource:
+    """A source that counts how often the worker asks, and can change answer."""
+
+    def __init__(self, options=None, backend_alias=None):
+        self.calls = 0
+        self.answer: list = []
+
+    def schedules(self):
+        self.calls += 1
+        return self.answer
+
+
+class _RaisingSource:
+    def __init__(self, options, backend_alias):
+        raise ImproperlyConfigured("this source refuses to be built")
+
+
+class _SourceWithoutSchedules:
+    def __init__(self, options, backend_alias):
+        pass
+
+
+def test_the_default_source_reads_settings_schedules():
+    source = schedule_source_from_options(
+        {"SCHEDULES": {"s": {"task": "tests.tasks.add", "cron": "* * * * *"}}},
+        "default",
+    )
+    assert isinstance(source, SettingsScheduleSource)
+    assert [s.name for s in source.schedules()] == ["s"]
+
+
+def test_the_default_source_answers_the_same_list_every_time():
+    # Settings do not change in a running process, so re-reading them would
+    # be work on the dispatch path for no possible change.
+    source = schedule_source_from_options(
+        {"SCHEDULES": {"s": {"task": "tests.tasks.add", "cron": "* * * * *"}}},
+        "default",
+    )
+    assert source.schedules() is source.schedules()
+
+
+def test_a_named_source_is_used_instead():
+    source = schedule_source_from_options(
+        {"SCHEDULE_SOURCE": f"{__name__}._RecordingSource"}, "default"
+    )
+    assert isinstance(source, _RecordingSource)
+
+
+def test_a_source_that_cannot_be_imported_is_a_configuration_error():
+    with pytest.raises(ImproperlyConfigured, match="cannot be imported"):
+        schedule_source_from_options(
+            {"SCHEDULE_SOURCE": "tests.nope.NoSuchSource"}, "default"
+        )
+
+
+def test_a_source_that_raises_on_construction_is_not_swallowed():
+    with pytest.raises(ImproperlyConfigured, match="refuses to be built"):
+        schedule_source_from_options(
+            {"SCHEDULE_SOURCE": f"{__name__}._RaisingSource"}, "default"
+        )
+
+
+def test_a_source_without_schedules_is_refused():
+    with pytest.raises(ImproperlyConfigured, match=r"has no\s+schedules\(\) method"):
+        schedule_source_from_options(
+            {"SCHEDULE_SOURCE": f"{__name__}._SourceWithoutSchedules"}, "default"
+        )
+
+
+def test_a_non_string_source_is_refused():
+    with pytest.raises(ImproperlyConfigured, match="dotted path string"):
+        schedule_source_from_options({"SCHEDULE_SOURCE": object()}, "default")
+
+
+def test_check_reports_a_broken_schedule_source(settings):
+    # Through the real backend check, not the resolver: a worker with a
+    # source it cannot build dispatches nothing and says nothing.
+    tasks = tasks_setting({})
+    tasks["default"]["OPTIONS"]["SCHEDULE_SOURCE"] = f"{__name__}._RaisingSource"
+    settings.TASKS = tasks
+    errors = default_task_backend.check()
+    assert [error.id for error in errors] == ["django_ox.E006"]
+
+
+def test_a_bad_schedule_is_reported_once_not_twice(settings):
+    # The default source is built from SCHEDULES, so checking it as well
+    # would report the same broken entry under both E002 and E006.
+    settings.TASKS = tasks_setting(
+        {"bad": {"task": "tests.tasks.add", "cron": "banana"}}
+    )
+    assert [e.id for e in default_task_backend.check()] == ["django_ox.E002"]
+
+
+@pytest.mark.django_db(transaction=True)
+class TestDispatchAsksTheSource:
+    def _worker(self, settings):
+        tasks = tasks_setting({})
+        tasks["default"]["OPTIONS"]["SCHEDULE_SOURCE"] = f"{__name__}._RecordingSource"
+        settings.TASKS = tasks
+        return Worker(backoff_initial=0)
+
+    def test_every_dispatch_pass_asks_the_source(self, settings):
+        worker = self._worker(settings)
+        source = worker._schedule_source
+        before = source.calls
+        worker.dispatch_schedules()
+        worker.dispatch_schedules()
+        assert source.calls == before + 2
+
+    def test_a_source_that_starts_empty_is_asked_again(self, settings):
+        # Through worker.run(), not dispatch_schedules(), because the thing
+        # under test is the run loop's own gate. It used to read the schedule
+        # list once at start-up and skip dispatch entirely while that list was
+        # empty, so a source that gained a schedule later was never asked
+        # again. An install whose first schedule is created after the worker
+        # started is the ordinary case for a source backed by rows.
+        worker = self._worker(settings)
+        worker.schedule_interval = 0.02
+        source = worker._schedule_source
+        start_worker_thread(worker)
+        try:
+            assert wait_for(lambda: source.calls > 0), "the loop never dispatched"
+            source.answer = schedules_from_options(
+                {
+                    "SCHEDULES": {
+                        "late": {"task": "tests.tasks.add", "cron": "* * * * *"}
+                    }
+                },
+                "default",
+            )
+            assert wait_for(
+                lambda: OxScheduleTick.objects.filter(schedule_name="late").exists()
+            ), "a schedule that appeared after start-up was never dispatched"
+        finally:
+            worker.request_stop()
+
+    def test_an_empty_source_costs_no_query(self, django_assert_num_queries, settings):
+        worker = self._worker(settings)
+        with django_assert_num_queries(0):
+            worker.dispatch_schedules()
+
+
+# -- interval triggers -------------------------------------------------
+
+
+class TestIntervalTrigger:
+    def test_ticks_land_on_the_epoch_grid(self):
+        trigger = IntervalTrigger(every=timedelta(hours=1))
+        assert trigger.previous(datetime(2026, 9, 9, 14, 37, 12)) == datetime(
+            2026, 9, 9, 14, 0
+        )
+
+    def test_phase_shifts_the_whole_sequence(self):
+        trigger = IntervalTrigger(every=timedelta(hours=1), phase=timedelta(minutes=10))
+        assert trigger.previous(datetime(2026, 9, 9, 14, 37)) == datetime(
+            2026, 9, 9, 14, 10
+        )
+        assert trigger.previous(datetime(2026, 9, 9, 14, 5)) == datetime(
+            2026, 9, 9, 13, 10
+        )
+
+    def test_an_instant_exactly_on_a_tick_is_that_tick(self):
+        trigger = IntervalTrigger(every=timedelta(minutes=5))
+        on_the_tick = datetime(2026, 9, 9, 14, 5)
+        assert trigger.previous(on_the_tick) == on_the_tick
+
+    def test_a_restart_cannot_move_the_cadence(self):
+        # The property epoch-anchoring exists for. A last-run-relative
+        # interval would restart its cadence from whenever the process came
+        # back; this one cannot, because when the process started is not an
+        # input to the tick function at all.
+        trigger = IntervalTrigger(every=timedelta(minutes=90))
+        before = trigger.previous(datetime(2026, 9, 9, 10, 0))
+        after_a_restart_at_an_awkward_moment = trigger.previous(
+            datetime(2026, 9, 9, 10, 0)
+        )
+        assert before == after_a_restart_at_an_awkward_moment
+        # And the sequence itself is fixed, not merely repeatable.
+        assert trigger.previous(datetime(2026, 9, 9, 10, 1)) == datetime(
+            2026, 9, 9, 9, 0
+        )
+
+    def test_two_workers_derive_the_same_tick(self):
+        # No leader, no stored cursor: coordination rests on every worker
+        # computing the same instant from the definition alone.
+        a = IntervalTrigger(every=timedelta(minutes=7))
+        b = IntervalTrigger(every=timedelta(minutes=7))
+        moment = datetime(2026, 9, 9, 14, 37, 41)
+        assert a.previous(moment) == b.previous(moment)
+
+    def test_a_pause_of_any_length_does_not_shift_later_ticks(self):
+        trigger = IntervalTrigger(every=timedelta(hours=6))
+        # Ticks either side of a three-day gap sit on the same grid.
+        assert trigger.previous(datetime(2026, 9, 9, 5, 0)) == datetime(
+            2026, 9, 9, 0, 0
+        )
+        assert trigger.previous(datetime(2026, 9, 12, 5, 0)) == datetime(
+            2026, 9, 12, 0, 0
+        )
+
+
+@pytest.mark.django_db
+class TestIntervalDispatch:
+    def test_an_interval_schedule_dispatches(self, settings):
+        settings.TASKS = tasks_setting(
+            {"every-minute": {"task": "tests.tasks.add", "every": 60}}
+        )
+        worker = Worker(backoff_initial=0)
+        worker.dispatch_schedules()  # anchors
+        backdate_anchor("every-minute", 1)
+        assert worker.dispatch_schedules() == 1
+        assert OxTask.objects.count() == 1
+
+
+@pytest.mark.django_db
+class TestTheSettingsPathIsUnchangedByStoredSchedules:
+    """
+    The stored-schedule work shares the dispatch loop with this path, so the
+    properties it has always had are asserted rather than assumed.
+    """
+
+    def test_ticks_are_keyed_on_the_schedule_name(self, scheduled_worker):
+        scheduled_worker.dispatch_schedules()
+        names = set(OxScheduleTick.objects.values_list("schedule_name", flat=True))
+        assert names == {"minutely-add"}
+        assert not any(n.startswith("db:") for n in names)
+
+    def test_the_first_sighting_anchors_without_firing(self, scheduled_worker):
+        assert scheduled_worker.dispatch_schedules() == 0
+        anchor = OxScheduleTick.objects.get()
+        assert anchor.task_id is None, "a settings schedule anchors on first sight"
+        assert OxTask.objects.count() == 0
+
+    def test_dispatch_takes_no_schedule_row_lock(
+        self, scheduled_worker, django_assert_max_num_queries
+    ):
+        # A settings schedule has no row to lock, and adding one for the
+        # stored path must not have added a query here. Seven is what the
+        # settings path costs on its own: the bounded tick read, the
+        # savepoint pair, the tick INSERT, the first-sighting check (the
+        # anchor sits before the bound, so it is asked), the task INSERT and
+        # the UPDATE that attaches the task to the tick.
+        scheduled_worker.dispatch_schedules()
+        backdate_anchor("minutely-add", 1)
+        with django_assert_max_num_queries(7):
+            scheduled_worker.dispatch_schedules()
+
+    def test_a_settings_schedule_has_no_boundary_or_refresh(self):
+        schedules = schedules_from_options(
+            {"SCHEDULES": {"s": {"task": "tests.tasks.add", "cron": "* * * * *"}}},
+            "default",
+        )
+        only = schedules[0]
+        assert only.start_time is None
+        assert only.refresh is None
+        assert only.anchors is True
+        assert only.key == only.name
