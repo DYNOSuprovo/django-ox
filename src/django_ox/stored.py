@@ -1,0 +1,604 @@
+"""
+Reading and writing schedules that live in the database.
+
+The write path is here rather than on the model because Django's
+``save()`` does not call ``full_clean()``. A ``clean()`` method alone
+would validate everything the admin submits and nothing that
+``objects.create()`` writes.
+
+So validation lives in one place and is called from two: the model's
+``clean()``, which the admin runs for free, and the functions below,
+which are the supported programmatic write path. A caller who bypasses
+both and writes the row directly gets an unvalidated row, and the
+dispatch path is written to expect one.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import time
+from datetime import timedelta
+from typing import Any
+
+from django.core.exceptions import (
+    ImproperlyConfigured,
+    PermissionDenied,
+    ValidationError,
+)
+from django.db import DatabaseError, connections, router, transaction
+from django.db.models import F
+from django.utils import timezone
+
+from . import registry
+from .compat import normalize_json
+from .cron import CronExpression
+from .models import OxSchedule, OxScheduleChange
+from .schedules import STORED_KEY_PREFIX
+
+logger = logging.getLogger("django_ox")
+
+#: The marker value has never been read. Distinct from None, which is what
+#: an install with no schedule changes yet legitimately reads.
+_UNREAD = object()
+
+TIMING_FIELDS = frozenset({"trigger", "cron", "every_seconds", "phase_seconds"})
+
+#: What the activation boundary is a boundary *for*: the columns that
+#: decide which instants a schedule wants.
+#:
+#: `enabled` is deliberately not here. A digest cannot see a round trip: a
+#: schedule disabled and re-enabled outside the write API ends with the same
+#: value it started with, so the digest is unchanged and the boundary looks
+#: current. Including it would add a spurious move on every disable and
+#: still miss the case it was meant to catch. Pausing and resuming through
+#: `update_schedule` moves the boundary; doing it with `queryset.update`
+#: does not, and that is documented rather than half-guarded.
+#:
+#: Timing has no such round-trip problem in practice, and where it does the
+#: digest is right to say nothing: a cron changed to something else and back
+#: again is a boundary that still matches the timing it was set for.
+BOUNDARY_FIELDS = frozenset(TIMING_FIELDS)
+
+
+def boundary_digest(schedule: OxSchedule) -> str:
+    """A digest of the columns the boundary was set for."""
+    material = "|".join(
+        f"{field}={getattr(schedule, field)!r}" for field in sorted(BOUNDARY_FIELDS)
+    )
+    return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
+def validate_schedule(schedule: OxSchedule) -> None:
+    """
+    Everything a stored schedule must satisfy, whoever is writing it.
+
+    Raises ValidationError with per-field messages, so the admin renders
+    them against the fields that caused them.
+    """
+    errors: dict[str, str] = {}
+
+    try:
+        registry.get(schedule.task_key)
+    except KeyError:
+        known = ", ".join(sorted(registry.kinds())) or "none"
+        errors["task_key"] = (
+            f"{schedule.task_key!r} is not a schedulable task. "
+            f"Registered keys: {known}."
+        )
+
+    if schedule.trigger == OxSchedule.Trigger.CRON:
+        if not schedule.cron:
+            errors["cron"] = "A cron schedule needs a cron expression."
+        else:
+            try:
+                CronExpression(schedule.cron)
+            except ValueError as exc:
+                errors["cron"] = str(exc)
+        if schedule.every_seconds is not None:
+            errors["every_seconds"] = "A cron schedule has no interval."
+    elif schedule.trigger == OxSchedule.Trigger.INTERVAL:
+        if schedule.every_seconds is None:
+            errors["every_seconds"] = "An interval schedule needs an interval."
+        elif schedule.every_seconds < 1:
+            errors["every_seconds"] = (
+                "An interval below one second cannot be honoured: the dispatch "
+                "loop looks about once a second and only the latest due tick "
+                "fires, so faster ticks would be coalesced rather than run."
+            )
+        elif schedule.phase_seconds >= schedule.every_seconds:
+            errors["phase_seconds"] = "The phase must be less than the interval."
+        if schedule.cron:
+            errors["cron"] = "An interval schedule has no cron expression."
+    else:
+        errors["trigger"] = f"Unknown trigger {schedule.trigger!r}."
+
+    if (
+        schedule.starting_deadline_seconds is not None
+        and schedule.starting_deadline_seconds < 1
+    ):
+        errors["starting_deadline_seconds"] = (
+            "A deadline below one second drops every tick, because a tick is "
+            "already later than that by the time a worker sees it."
+        )
+
+    if (
+        schedule.end_time is not None
+        and schedule.start_time is not None
+        and schedule.end_time <= schedule.start_time
+    ):
+        errors["end_time"] = "The end time must be after the start time."
+
+    kind = registry.kinds().get(schedule.task_key)
+    if not isinstance(schedule.arguments, dict):
+        errors["arguments"] = "Arguments must be a mapping."
+    elif kind is not None and kind.form is not None:
+        form = kind.form(schedule.arguments)
+        if not form.is_valid():
+            errors["arguments"] = "; ".join(
+                f"{field}: {' '.join(messages)}"
+                for field, messages in form.errors.items()
+            )
+        else:
+            # What the form cleans to is what reaches the task, and a task
+            # is enqueued as JSON. A DateField cleans to a date and an
+            # IntegerField to an int; only one of those survives the trip.
+            # Checked here so the row is refused, and again at dispatch so
+            # a row written any other way is skipped rather than fatal.
+            try:
+                normalize_json(dict(form.cleaned_data))
+            except (TypeError, ValueError) as exc:
+                errors["arguments"] = (
+                    f"{kind.form.__name__} cleans to a value a task cannot "
+                    f"carry: {exc}. Use a field whose cleaned value is JSON."
+                )
+
+    if errors:
+        raise ValidationError(errors)
+
+
+def check_permission(schedule: OxSchedule, user: Any) -> None:
+    """
+    Enforce a registry entry's own permission, if it declares one.
+
+    Kept here rather than only in the admin because the admin is one write
+    path and these functions are the other. A permission enforced in the
+    UI alone is a permission the UI enforces.
+
+    Django's per-action admin permission hook takes no object, so this
+    cannot ride on it; the shape is borrowed instead, and object-level
+    backends get their chance because the schedule is passed through.
+    """
+    kind = registry.kinds().get(schedule.task_key)
+    if kind is None or kind.permission is None:
+        return
+    if user is None:
+        return
+    if not user.has_perm(kind.permission, schedule) and not user.has_perm(
+        kind.permission
+    ):
+        raise PermissionDenied(
+            f"Scheduling {schedule.task_key!r} needs the "
+            f"{kind.permission!r} permission."
+        )
+
+
+def _touch_change_row() -> None:
+    """Tell every worker that the stored schedules moved."""
+    OxScheduleChange.objects.update_or_create(
+        id=1, defaults={"changed_at": timezone.now()}
+    )
+
+
+def create_schedule(*, user: Any = None, **fields: Any) -> OxSchedule:
+    """
+    Create a stored schedule, validated.
+
+    `start_time` defaults to now, which is the point of writing it here:
+    the boundary belongs to the moment the schedule came into existence,
+    not to the moment a worker first happens to notice it.
+    """
+    now = timezone.now()
+    fields.setdefault("start_time", now)
+    schedule = OxSchedule(created_at=now, updated_at=now, **fields)
+    schedule.boundary_for = boundary_digest(schedule)
+    schedule.full_clean(exclude=["boundary_for", "created_at", "updated_at"])
+    check_permission(schedule, user)
+    with transaction.atomic():
+        schedule.save()
+        _touch_change_row()
+    return schedule
+
+
+def update_schedule(
+    schedule: OxSchedule, *, user: Any = None, **fields: Any
+) -> OxSchedule:
+    """
+    Change a stored schedule, moving the boundary when the timing moves.
+
+    Retiming reschedules from the moment of the change: every tick before
+    it is skipped, whatever the old definition would have done. At 15:00
+    a schedule retimed from 02:00 to 14:00 does not fire today's 14:00,
+    because at 14:00 today nobody could have expected a run.
+
+    Enabling a disabled schedule moves the boundary too, so a pause does
+    not accumulate a backlog that fires all at once on resume.
+    """
+    # From the database, not from the instance. The admin hands this function
+    # form.instance, which ModelForm._post_clean has already updated, so the
+    # in-memory value is the new one and a re-enable through the change form
+    # would never look like a transition.
+    now = timezone.now()
+    with transaction.atomic():
+        # The row under its own lock, and the values read from it. Reading
+        # them outside the transaction and then saving every field off the
+        # instance let a caller holding a stale copy write an old
+        # start_time over a newer one, undoing a resume someone else had
+        # just made.
+        current = _lock_row(schedule.pk, router.db_for_write(OxSchedule))
+        if current is None:
+            raise OxSchedule.DoesNotExist(f"Schedule {schedule.pk} no longer exists.")
+        # The values as the database holds them, before this call's changes.
+        # Taken from the locked row rather than from the caller's instance,
+        # which may be minutes old.
+        previous = {
+            field: getattr(current, field) for field in (*BOUNDARY_FIELDS, "enabled")
+        }
+        stale_boundary = current.boundary_for != boundary_digest(current)
+
+        # Only the fields this call was given. Everything else keeps the
+        # value the database holds now, not the value the caller last saw.
+        for name, value in fields.items():
+            setattr(current, name, value)
+
+        retimed = any(
+            getattr(current, field) != previous[field] for field in TIMING_FIELDS
+        )
+        resumed = current.enabled and not previous["enabled"]
+        # stale_boundary: the timing had already changed by a route that did
+        # not move the boundary, so it is stale whatever this call changes.
+        if retimed or resumed or stale_boundary:
+            current.start_time = now
+        current.boundary_for = boundary_digest(current)
+        current.updated_at = now
+        current.full_clean(exclude=["boundary_for", "created_at", "updated_at"])
+        check_permission(current, user)
+        current.save()
+        _touch_change_row()
+    # The caller's instance is the one they will read from next.
+    schedule.refresh_from_db()
+    return schedule
+
+
+def delete_schedule(schedule: OxSchedule) -> None:
+    """
+    Delete a stored schedule and tell the workers.
+
+    A plain delete() leaves every running worker holding the schedule until
+    something else changes, enqueueing and rolling back once a pass.
+    """
+    with transaction.atomic():
+        schedule.delete()
+        _touch_change_row()
+
+
+def schedule_to_trigger_config(schedule: OxSchedule) -> dict[str, Any]:
+    """The SCHEDULES-shaped timing config a stored row describes."""
+    if schedule.trigger == OxSchedule.Trigger.CRON:
+        return {"cron": schedule.cron}
+    return {
+        "every": timedelta(seconds=schedule.every_seconds or 0),
+        "phase": timedelta(seconds=schedule.phase_seconds),
+    }
+
+
+def _lock_row(pk: int, db_alias: str) -> OxSchedule | None:
+    """
+    Take this schedule's row lock and return the row as it stands.
+
+    On PostgreSQL and MySQL a locking read is a current read: it waits for
+    a concurrent writer, then reads the committed row rather than the
+    transaction's snapshot.
+
+    SQLite has neither row locks nor `SELECT ... FOR UPDATE`, and Django
+    drops the clause there without raising, so a locking read alone holds
+    on two databases and does nothing at all on the third. What serialises
+    SQLite is being a writer, and a transaction that reads first starts as
+    a reader. The no-op UPDATE makes it a writer before it reads.
+
+    Nothing here depends on a rowcount. Reading one would rest on Django
+    setting MySQL's FOUND_ROWS flag, and a project setting its own
+    client_flag would lose the guarantee with no error.
+    """
+    rows = OxSchedule.objects.using(db_alias).filter(pk=pk)
+    if connections[db_alias].features.has_select_for_update:
+        return rows.select_for_update().first()
+    OxSchedule.objects.using(db_alias).filter(pk=pk).update(name=F("name"))
+    return rows.first()
+
+
+class DatabaseScheduleSource:
+    """
+    Schedules read from OxSchedule rows.
+
+    Named in a backend's OPTIONS::
+
+        "OPTIONS": {"SCHEDULE_SOURCE": "django_ox.stored.DatabaseScheduleSource"}
+
+    Rows are re-read only when the change row moves, so the steady state
+    is one cheap read of one row per dispatch pass. Polling rather than
+    listening on purpose: a notification channel would be a second thing
+    to deploy and monitor, and not needing one is the whole point of this
+    package.
+
+    A row is input from a person, unlike a settings entry, so it is
+    treated as such. One that no longer validates, or that names a key
+    this deployment does not register, is skipped and logged rather than
+    allowed to stop every other schedule from firing.
+    """
+
+    def __init__(self, options: dict[str, Any], backend_alias: str) -> None:
+        self._options = options
+        self._backend_alias = backend_alias
+        self._cached: list[Any] = []
+        self._seen_change: Any = _UNREAD
+        #: Rows whose boundary was found stale. Healed on the next pass
+        #: rather than in place: the dispatch transaction rolls back when a
+        #: tick is refused, which would take the heal with it.
+        self._needs_heal: set[Any] = set()
+        #: When the rows were last read in full, on the monotonic clock.
+        #: None means never.
+        self._last_read: float | None = None
+        self._db_alias = router.db_for_write(OxSchedule)
+        #: How often to read every row regardless of the change marker.
+        raw_interval = options.get("SCHEDULE_RECONCILE_INTERVAL", 60.0)
+        try:
+            self._reconcile_interval = float(raw_interval)
+        except (TypeError, ValueError) as exc:
+            raise ImproperlyConfigured(
+                "SCHEDULE_RECONCILE_INTERVAL must be a number of seconds, "
+                f"not {raw_interval!r}."
+            ) from exc
+        if self._reconcile_interval <= 0:
+            raise ImproperlyConfigured(
+                "SCHEDULE_RECONCILE_INTERVAL must be greater than zero; it is "
+                "the backstop that finds a row changed without this package's "
+                "write functions."
+            )
+
+    def schedules(self) -> list[Any]:
+        if self._needs_heal:
+            self._heal()
+        try:
+            changed_at = (
+                OxScheduleChange.objects.using(self._db_alias)
+                .filter(id=1)
+                .values_list("changed_at", flat=True)
+                .first()
+            )
+        except DatabaseError:
+            # Reading the marker failed. An empty list would read as "no
+            # schedules are configured", which is a different and much
+            # worse claim, so the last known set stands until the database
+            # answers again.
+            logger.warning(
+                "Could not read the schedule change marker; using the last "
+                "known schedules",
+                exc_info=True,
+                extra={"event": "schedule_source_unavailable"},
+            )
+            return self._cached
+        if changed_at == self._seen_change and not self._due_for_a_full_read():
+            return self._cached
+        self._cached = self._build()
+        self._seen_change = changed_at
+        self._last_read = time.monotonic()
+        return self._cached
+
+    def _due_for_a_full_read(self) -> bool:
+        """
+        Has it been long enough to read every row again regardless?
+
+        The change marker is bumped by this package's own write functions
+        and by nothing else, so a row created, re-enabled or retimed with
+        `queryset.update()`, a data migration or a fixture moves nothing
+        that a worker watches. Without a periodic read those rows are
+        invisible until something unrelated happens to bump the marker.
+
+        A schedule that is disabled is not read at all, so it cannot be
+        noticed any other way: it is not in the cache to be refreshed and
+        it is not in the query that builds one.
+
+        The marker is what makes an ordinary edit visible within a second.
+        This is the backstop, and it is one indexed read of a small table.
+        """
+        if self._last_read is None:
+            return True
+        return (time.monotonic() - self._last_read) >= self._reconcile_interval
+
+    def _heal(self) -> None:
+        """
+        Move the boundary of every schedule found stale at dispatch.
+
+        A timing change made by a route that runs no model code leaves the
+        boundary set for the old timing, so the schedule would fire an
+        instant nothing scheduled while it was in the future. Dispatch
+        refuses that tick; this moves the boundary forward so the schedule
+        resumes on its new timing rather than being refused forever.
+
+        Bumping the change marker is not incidental. A worker whose cached
+        copy still holds the old timing has nothing else to tell it to
+        re-read, and would go on proposing ticks the row no longer wants.
+        """
+        pending, self._needs_heal = self._needs_heal, set()
+        now = timezone.now()
+        for pk in pending:
+            try:
+                with transaction.atomic(using=self._db_alias):
+                    row = _lock_row(pk, self._db_alias)
+                    if row is None:
+                        continue
+                    digest = boundary_digest(row)
+                    if row.boundary_for == digest:
+                        continue  # someone else healed it first
+                    OxSchedule.objects.using(self._db_alias).filter(pk=pk).update(
+                        start_time=now, boundary_for=digest
+                    )
+                    _touch_change_row()
+                logger.info(
+                    "Moved schedule %s to a boundary matching its timing",
+                    pk,
+                    extra={"event": "schedule_boundary_healed", "schedule_pk": pk},
+                )
+            except DatabaseError:
+                logger.warning(
+                    "Could not move schedule %s onto its current timing",
+                    pk,
+                    exc_info=True,
+                    extra={"event": "schedule_boundary_heal_failed"},
+                )
+                self._needs_heal.add(pk)
+
+    def _build(self) -> list[Any]:
+        built = []
+        for row in OxSchedule.objects.using(self._db_alias).filter(enabled=True):
+            # Checked here, where every enabled row is read whether or not
+            # a tick of it is due. At dispatch it would sit behind the
+            # snapshot's own filters, so a row whose cached copy said "not
+            # due" would never reach it: an expired end_time, a boundary in
+            # the future, or a period long enough that the next tick is
+            # months away would each hide that the row had changed.
+            if row.boundary_for != boundary_digest(row):
+                self._needs_heal.add(row.pk)
+            try:
+                built.append(self._to_schedule(row))
+            except Exception as exc:
+                # Every exception, not a chosen list. A row is input from
+                # a person, and the guarantee that one bad row cannot stop
+                # the others cannot rest on predicting how a row goes
+                # wrong.
+                logger.warning(
+                    "Skipping stored schedule %s: %s",
+                    row.name,
+                    exc,
+                    extra={
+                        "event": "schedule_row_skipped",
+                        "schedule": row.name,
+                        "schedule_pk": row.pk,
+                        "reason": str(exc),
+                    },
+                )
+        return built
+
+    def _to_schedule(self, row: OxSchedule) -> Any:
+        from .schedules import IntervalTrigger, Schedule
+
+        kind = registry.get(row.task_key)
+        arguments = dict(row.arguments) if isinstance(row.arguments, dict) else None
+        if arguments is None:
+            raise ValueError("arguments must be a mapping")
+        if kind.form is not None:
+            form = kind.form(arguments)
+            if not form.is_valid():
+                raise ValidationError(dict(form.errors))
+            # The cleaned values, not the raw ones. A form declares the types
+            # its task expects, and passing the raw row through would honour
+            # that declaration only where the field happens to reject.
+            arguments = dict(form.cleaned_data)
+            # Raises, so _build and _current skip this row and log it. A
+            # row can be written around validate_schedule.
+            normalize_json(arguments)
+        trigger: Any
+        if row.trigger == OxSchedule.Trigger.CRON:
+            trigger = CronExpression(row.cron)
+        else:
+            if not row.every_seconds:
+                raise ValueError(
+                    "an interval schedule needs a non-zero interval; this row "
+                    "has none, and building a trigger from it would divide by "
+                    "zero on the dispatch path"
+                )
+            trigger = IntervalTrigger(
+                every=timedelta(seconds=row.every_seconds),
+                phase=timedelta(seconds=row.phase_seconds),
+            )
+        pk, alias = row.pk, self._db_alias
+        # Bound to this backend, exactly as schedules_from_options binds a
+        # settings-declared schedule: the schedule is dispatched by this
+        # backend's workers, so its enqueues belong in this backend's queue
+        # whatever alias the task was declared with.
+        task = (
+            kind.task
+            if kind.task.backend == self._backend_alias
+            else kind.task.using(backend=self._backend_alias)
+        )
+        return Schedule(
+            name=row.name,
+            # The row's identity, not its label. Renaming a schedule must not
+            # change what its ticks are keyed on, or a worker holding the old
+            # label and one holding the new would write two tick rows for the
+            # same instant and the unique constraint would coordinate neither.
+            dispatch_key=f"{STORED_KEY_PREFIX}{row.pk}",
+            task=task,
+            trigger=trigger,
+            args=(),
+            kwargs=arguments,
+            start_time=row.start_time,
+            end_time=row.end_time,
+            starting_deadline=(
+                timedelta(seconds=row.starting_deadline_seconds)
+                if row.starting_deadline_seconds is not None
+                else None
+            ),
+            # A row was given its boundary when it was created, so it does
+            # not need a first sighting to establish one.
+            anchors=False,
+            refresh=lambda: self._current(pk, alias),
+        )
+
+    def _current(self, pk: int, db_alias: str) -> Any:
+        """
+        This schedule as it stands now, under its lock, or None.
+
+        None means the row is gone, is disabled, or no longer describes a
+        schedule this deployment can run. The dispatch loop treats all three
+        the same way: it writes nothing, so the tick stays unclaimed and a
+        worker with a current view can still act on it.
+        """
+        try:
+            row = _lock_row(pk, db_alias)
+        except DatabaseError:
+            # A lock-wait timeout, or SQLite reporting the database busy.
+            # One schedule's contention must not end the pass for the rest.
+            logger.warning(
+                "Could not lock stored schedule %s; skipping it this pass",
+                pk,
+                exc_info=True,
+                extra={"event": "schedule_lock_unavailable", "schedule_pk": pk},
+            )
+            return None
+        if row is None or not row.enabled:
+            # Drop it from the snapshot too. Returning None alone left the
+            # row in the cache, so every later pass planned its tick again
+            # and took its lock again, for a schedule that cannot fire.
+            self._cached = [
+                s for s in self._cached if s.dispatch_key != f"{STORED_KEY_PREFIX}{pk}"
+            ]
+            return None
+        if row.boundary_for != boundary_digest(row):
+            # The timing changed without the boundary moving, so the tick
+            # this worker planned belongs to a definition that no longer
+            # applies. Refuse it, and heal on the next pass: the refusal
+            # rolls this transaction back and would take the heal with it.
+            self._needs_heal.add(pk)
+            return None
+        try:
+            return self._to_schedule(row)
+        except Exception:
+            logger.warning(
+                "Stored schedule %s could not be read at dispatch",
+                pk,
+                exc_info=True,
+                extra={"event": "schedule_row_skipped", "schedule_pk": pk},
+            )
+            return None

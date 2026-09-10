@@ -1,0 +1,817 @@
+"""Dispatching schedules that live in the database."""
+
+from datetime import timedelta
+
+import pytest
+from django import forms
+from django.utils import timezone
+
+from django_ox.models import OxSchedule, OxScheduleTick, OxTask
+from django_ox.registry import ArgsForm, ScheduleKind, register
+from django_ox.stored import (
+    boundary_digest,
+    create_schedule,
+    update_schedule,
+)
+from django_ox.worker import Worker
+
+from . import tasks
+
+
+class _Args(ArgsForm):
+    region = forms.CharField()
+
+
+def tasks_setting():
+    return {
+        "default": {
+            "BACKEND": "django_ox.backend.OxBackend",
+            "QUEUES": ["default"],
+            "OPTIONS": {
+                "SCHEDULE_SOURCE": "django_ox.stored.DatabaseScheduleSource",
+            },
+        }
+    }
+
+
+@pytest.fixture(autouse=True)
+def _registry(monkeypatch):
+    monkeypatch.setattr("django_ox.registry._registry", {})
+    monkeypatch.setattr("django_ox.registry._discovered", True)
+    register(ScheduleKind(key="report", task=tasks.add))
+    register(ScheduleKind(key="checked", task=tasks.add, form=_Args))
+
+
+@pytest.fixture
+def worker(settings):
+    settings.TASKS = tasks_setting()
+    return Worker(backoff_initial=0)
+
+
+def a_minutely(**over):
+    # The boundary is backdated by default so the current minute's tick is
+    # at or after it. A schedule created at 14:37:41 has its 14:37:00 tick
+    # *before* its boundary and correctly waits for 14:38:00, which is right
+    # but makes for a slow test.
+    fields = {
+        "name": "minutely",
+        "task_key": "report",
+        "trigger": "cron",
+        "cron": "* * * * *",
+        "start_time": timezone.now() - timedelta(minutes=5),
+    }
+    fields.update(over)
+    return create_schedule(**fields)
+
+
+pytestmark = pytest.mark.django_db
+
+
+class TestABoundaryReplacesTheAnchor:
+    def test_a_row_fires_on_its_first_due_tick(self, worker):
+        # The whole point of start_time. A settings schedule would record an
+        # anchor here and enqueue nothing, so a row created while every
+        # worker was down would lose its first run.
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+        assert OxTask.objects.count() == 1
+
+    def test_a_tick_before_the_boundary_does_not_fire(self, worker):
+        a_minutely(start_time=timezone.now() + timedelta(hours=1))
+        assert worker.dispatch_schedules() == 0
+        assert OxScheduleTick.objects.count() == 0
+
+    def test_a_tick_after_the_end_time_does_not_fire(self, worker):
+        row = a_minutely()
+        update_schedule(row, end_time=row.start_time + timedelta(seconds=1))
+        assert worker.dispatch_schedules() == 0
+
+    def test_the_same_tick_fires_only_once(self, worker):
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+        assert worker.dispatch_schedules() == 0
+        assert OxTask.objects.count() == 1
+
+
+class TestTheDisableRace:
+    """
+    The window no poll interval can close.
+
+    A worker reads a schedule while its row is enabled, the row changes,
+    and the worker then reaches dispatch still holding what it read.
+    Re-reading more often shrinks the window and never removes it, so the
+    check has to happen under the row's own lock inside the dispatch
+    transaction.
+
+    Each test pins the worker's view to what it read *before* the change,
+    by replacing the source's answer outright. Priming the cache instead
+    would be read back through the freshness check and quietly refreshed,
+    which makes the test pass for the wrong reason.
+    """
+
+    def _hold_stale_view(self, worker, monkeypatch):
+        stale = worker._schedule_source.schedules()
+        assert stale, "the worker should be holding a schedule"
+        monkeypatch.setattr(worker._schedule_source, "schedules", lambda: stale)
+        return stale
+
+    def test_a_schedule_disabled_after_it_was_read_does_not_fire(
+        self, worker, monkeypatch
+    ):
+        row = a_minutely()
+        self._hold_stale_view(worker, monkeypatch)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+
+        assert worker.dispatch_schedules() == 0
+        assert OxTask.objects.count() == 0
+        assert not OxScheduleTick.objects.exists(), (
+            "a refused tick must stay unclaimed so a current worker can act"
+        )
+
+    def test_a_schedule_retimed_after_it_was_read_does_not_fire(
+        self, worker, monkeypatch
+    ):
+        # The ticks this worker computed are no longer this schedule's ticks.
+        row = a_minutely()
+        self._hold_stale_view(worker, monkeypatch)
+        OxSchedule.objects.filter(pk=row.pk).update(cron="0 3 * * *")
+
+        assert worker.dispatch_schedules() == 0
+        assert OxTask.objects.count() == 0
+
+    def test_a_deleted_schedule_does_not_fire(self, worker, monkeypatch):
+        row = a_minutely()
+        self._hold_stale_view(worker, monkeypatch)
+        OxSchedule.objects.filter(pk=row.pk).delete()
+
+        assert worker.dispatch_schedules() == 0
+        assert OxTask.objects.count() == 0
+
+
+class TestTheStartingDeadline:
+    def test_a_tick_later_than_the_deadline_is_dropped(self, worker):
+        row = create_schedule(
+            name="hourly",
+            task_key="report",
+            trigger="cron",
+            cron="0 * * * *",
+            start_time=timezone.now() - timedelta(days=2),
+            starting_deadline_seconds=60,
+        )
+        assert row.pk
+        assert worker.dispatch_schedules() == 0
+
+    def test_without_a_deadline_a_late_tick_still_fires(self, worker):
+        create_schedule(
+            name="hourly",
+            task_key="report",
+            trigger="cron",
+            cron="0 * * * *",
+            start_time=timezone.now() - timedelta(days=2),
+        )
+        assert worker.dispatch_schedules() == 1
+
+
+class TestABadRowDoesNotStopTheOthers:
+    def test_an_unknown_key_is_skipped_and_the_tick_stays_unclaimed(self, worker):
+        # The rolling-deploy case: an older worker meets a key only newer
+        # code registers. If it claimed the tick, the worker that could run
+        # it would be suppressed by the unique constraint and that tick would
+        # silently never fire.
+        unknown = OxSchedule.objects.create(
+            name="future",
+            task_key="only.in.new.code",
+            trigger="cron",
+            cron="* * * * *",
+            start_time=timezone.now() - timedelta(minutes=5),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+        # The tick must be left unclaimed, or a worker that knows the key
+        # would be suppressed by the unique constraint and it would never
+        # fire. Asserted against the row's dispatch key: filtering on the
+        # display name matches nothing and would pass however broken this is.
+        assert not OxScheduleTick.objects.filter(
+            schedule_name=f"db:{unknown.pk}"
+        ).exists()
+
+    def test_a_row_whose_arguments_no_longer_validate_is_skipped(self, worker):
+        stale = OxSchedule.objects.create(
+            name="stale-args",
+            task_key="checked",
+            trigger="cron",
+            cron="* * * * *",
+            arguments={"gone": 1},
+            start_time=timezone.now() - timedelta(minutes=5),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+        assert not OxScheduleTick.objects.filter(
+            schedule_name=f"db:{stale.pk}"
+        ).exists()
+
+    def test_a_row_with_an_unparseable_cron_is_skipped(self, worker):
+        OxSchedule.objects.create(
+            name="bad-cron",
+            task_key="report",
+            trigger="cron",
+            cron="banana",
+            start_time=timezone.now() - timedelta(minutes=5),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+
+
+class TestFreshness:
+    def test_an_unchanged_marker_costs_one_query(
+        self, worker, django_assert_num_queries
+    ):
+        a_minutely()
+        worker._schedule_source.schedules()
+        with django_assert_num_queries(1):
+            worker._schedule_source.schedules()
+
+    def test_a_change_is_noticed(self, worker):
+        source = worker._schedule_source
+        assert source.schedules() == []
+        a_minutely()
+        assert [s.name for s in source.schedules()] == ["minutely"]
+
+    def test_a_disabled_schedule_leaves_the_set(self, worker):
+        row = a_minutely()
+        source = worker._schedule_source
+        assert len(source.schedules()) == 1
+        update_schedule(row, enabled=False)
+        assert source.schedules() == []
+
+
+def test_a_schedule_created_mid_minute_waits_for_the_next_tick(worker):
+    # Created at 14:37:41 with a minutely cron, the 14:37:00 tick is before
+    # the boundary: at that instant the schedule did not exist. It fires at
+    # 14:38:00, not immediately.
+    create_schedule(
+        name="just-now", task_key="report", trigger="cron", cron="* * * * *"
+    )
+    assert worker.dispatch_schedules() == 0
+    assert not OxScheduleTick.objects.exists()
+
+
+class TestABadRowCannotStopTheWorker:
+    def test_a_zero_interval_row_is_skipped_and_the_others_still_fire(self, worker):
+        # This one killed the worker. IntervalTrigger(every=0) raises
+        # ZeroDivisionError, which is not a ValueError, so the per-row guard
+        # missed it and it reached the dispatch loop.
+        zero = OxSchedule.objects.create(
+            name="zero",
+            task_key="report",
+            trigger="interval",
+            cron="",
+            every_seconds=0,
+            start_time=timezone.now() - timedelta(minutes=5),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+        assert not OxScheduleTick.objects.filter(schedule_name=f"db:{zero.pk}").exists()
+
+    def test_a_null_interval_row_cannot_be_created_at_all(self):
+        # The database refuses it now, so the runtime guard never has to see
+        # this shape. Zero still gets through, because zero is not null, which
+        # is why both defences exist.
+        from django.db.utils import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            OxSchedule.objects.create(
+                name="null-interval",
+                task_key="report",
+                trigger="interval",
+                cron="",
+                every_seconds=None,
+                start_time=timezone.now() - timedelta(minutes=5),
+                created_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+
+    def test_non_mapping_arguments_are_skipped(self, worker):
+        OxSchedule.objects.create(
+            name="listargs",
+            task_key="report",
+            trigger="cron",
+            cron="* * * * *",
+            arguments=[1, 2],
+            start_time=timezone.now() - timedelta(minutes=5),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+
+
+class TestDeadlineValidation:
+    def test_a_zero_deadline_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        with pytest.raises(ValidationError) as caught:
+            a_minutely(name="d", starting_deadline_seconds=0)
+        assert "starting_deadline_seconds" in caught.value.message_dict
+
+
+class TestDeleteTellsTheWorkers:
+    def test_deleting_a_schedule_bumps_the_change_row(self, worker):
+        from django_ox.models import OxScheduleChange
+        from django_ox.stored import delete_schedule
+
+        row = a_minutely()
+        before = OxScheduleChange.objects.get(id=1).changed_at
+        delete_schedule(row)
+        assert OxScheduleChange.objects.get(id=1).changed_at > before
+        assert worker._schedule_source.schedules() == []
+
+
+class TestRenamingCannotSplitTheCoordination:
+    """
+    A rename used to produce two tasks for one tick.
+
+    Ticks are keyed on the dispatch log's name column; admission is keyed on
+    the row. When the label a person edits was also the coordination key, two
+    workers holding different labels for one row wrote two rows for the same
+    instant, and the unique constraint saw nothing in common between them.
+    """
+
+    def _hold(self, worker, monkeypatch):
+        held = worker._schedule_source.schedules()
+        assert held
+        monkeypatch.setattr(worker._schedule_source, "schedules", lambda: held)
+        return held
+
+    def test_a_rename_mid_flight_still_fires_once(self, worker, monkeypatch):
+        row = a_minutely(name="old")
+        self._hold(worker, monkeypatch)  # worker holds name="old"
+        update_schedule(row, name="new")
+        other = Worker(backoff_initial=0)  # reads name="new"
+
+        worker.dispatch_schedules()
+        other.dispatch_schedules()
+
+        assert OxTask.objects.count() == 1, "one tick produced more than one task"
+        assert OxScheduleTick.objects.count() == 1
+
+    def test_the_tick_is_keyed_on_the_row_not_the_label(self, worker):
+        row = a_minutely(name="labelled")
+        worker.dispatch_schedules()
+        assert OxScheduleTick.objects.get().schedule_name == f"db:{row.pk}"
+
+    def test_renaming_preserves_tick_history(self, worker):
+        row = a_minutely(name="before")
+        worker.dispatch_schedules()
+        before = set(OxScheduleTick.objects.values_list("schedule_name", flat=True))
+        update_schedule(row, name="after")
+        assert (
+            set(OxScheduleTick.objects.values_list("schedule_name", flat=True))
+            == before
+        ), "a rename must not orphan the schedule's own history"
+
+    def test_a_settings_schedule_may_not_use_the_reserved_prefix(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        from django_ox.schedules import schedules_from_options
+
+        with pytest.raises(ImproperlyConfigured, match="reserved"):
+            schedules_from_options(
+                {
+                    "SCHEDULES": {
+                        "db:1": {"task": "tests.tasks.add", "cron": "* * * * *"}
+                    }
+                },
+                "default",
+            )
+
+
+class TestTheDecisionComesFromTheRow:
+    """
+    A snapshot chooses candidates. The row decides.
+
+    Each test here changes something after a worker has read the schedule
+    and before it dispatches. Every one of them used to fire anyway,
+    because admission re-checked two columns and these are not those two.
+    """
+
+    def _hold(self, worker, monkeypatch):
+        held = worker._schedule_source.schedules()
+        assert held
+        monkeypatch.setattr(worker._schedule_source, "schedules", lambda: held)
+        return held
+
+    def test_a_resumed_schedule_does_not_fire_a_pre_resume_tick(
+        self, worker, monkeypatch
+    ):
+        # Pause and resume moves the boundary forward. A worker still holding
+        # the pre-pause view would otherwise fire a tick from before it, which
+        # is the retroactive run the boundary exists to prevent.
+        row = a_minutely()
+        self._hold(worker, monkeypatch)
+        update_schedule(row, enabled=False)
+        update_schedule(row, enabled=True)
+        assert worker.dispatch_schedules() == 0
+        assert not OxScheduleTick.objects.exists()
+
+    def test_a_bulk_retime_does_not_fire_retroactively(self, worker, monkeypatch):
+        # queryset.update() runs no model code at all, so nothing at write
+        # time notices. The tick is recomputed from the row instead.
+        row = a_minutely(
+            cron="0 2 * * *", start_time=timezone.now() - timedelta(days=2)
+        )
+        self._hold(worker, monkeypatch)
+        OxSchedule.objects.filter(pk=row.pk).update(cron="0 3 * * *")
+        assert worker.dispatch_schedules() == 0
+
+    def test_a_tightened_deadline_drops_the_tick(self, worker, monkeypatch):
+        # The clock is frozen well past the tick. Left to the wall clock,
+        # this asserted that a minutely tick was more than a second old,
+        # which is false for the first second of every minute: a one-in-
+        # sixty failure that says nothing about the code.
+        from django.utils import timezone as tz
+
+        row = a_minutely(
+            cron="0 * * * *", start_time=timezone.now() - timedelta(days=1)
+        )
+        self._hold(worker, monkeypatch)
+        update_schedule(row, starting_deadline_seconds=60)
+        frozen = tz.now().replace(minute=30, second=0, microsecond=0)
+        monkeypatch.setattr(tz, "now", lambda: frozen)
+        assert worker.dispatch_schedules() == 0
+
+    def test_a_moved_end_time_stops_the_tick(self, worker, monkeypatch):
+        row = a_minutely()
+        self._hold(worker, monkeypatch)
+        OxSchedule.objects.filter(pk=row.pk).update(
+            end_time=row.start_time + timedelta(seconds=1)
+        )
+        assert worker.dispatch_schedules() == 0
+
+    def test_the_task_that_runs_is_the_one_the_row_names_now(self, worker, monkeypatch):
+        # The snapshot's task is not enqueued; the row's is.
+        row = a_minutely()
+        self._hold(worker, monkeypatch)
+        update_schedule(row, task_key="checked", arguments={"region": "emea"})
+        assert worker.dispatch_schedules() == 1
+        assert OxTask.objects.count() == 1
+        assert "emea" in str(OxTask.objects.get().kwargs)
+
+    def test_a_due_tick_costs_a_bounded_number_of_queries(
+        self, worker, django_assert_max_num_queries
+    ):
+        # Deciding from the row adds a statement on the due-tick path.
+        # Measured rather than assumed, and a bound rather than a number:
+        # PostgreSQL and MySQL take the lock with one locking read, SQLite
+        # has no row locks and takes a no-op write and then a read, so the
+        # count differs by database and SQLite is the expensive one.
+        #
+        # This is the due path, which runs at most once a minute per
+        # schedule. The polling path is unchanged. One of the nine is the
+        # UPDATE that attaches the task to a tick row written before the
+        # enqueue, so a worker that loses the tick announces nothing.
+        a_minutely()
+        worker._schedule_source.schedules()
+        with django_assert_max_num_queries(9):
+            worker.dispatch_schedules()
+
+
+class TestTheBoundaryMustMatchTheTiming:
+    """
+    A write that runs no model code leaves the boundary set for the old
+    timing. Dispatch notices, refuses the tick, and moves the boundary so
+    the schedule resumes rather than being refused forever.
+    """
+
+    def test_a_fresh_worker_does_not_fire_a_raw_retimed_tick(self, worker):
+        # Nobody holds a stale snapshot here: the worker reads the row after
+        # the change. Comparing two reads cannot catch this; comparing the
+        # boundary against the timing can.
+        a_minutely(cron="0 2 * * *", start_time=timezone.now() - timedelta(days=2))
+        OxSchedule.objects.filter(name="minutely").update(cron="0 3 * * *")
+        assert Worker(backoff_initial=0).dispatch_schedules() == 0
+
+    def test_the_boundary_is_moved_onto_the_new_timing(self, worker):
+        from django_ox.stored import boundary_digest
+
+        row = a_minutely(
+            cron="0 2 * * *", start_time=timezone.now() - timedelta(days=2)
+        )
+        OxSchedule.objects.filter(pk=row.pk).update(cron="0 3 * * *")
+        for _ in range(3):
+            worker.dispatch_schedules()
+        row.refresh_from_db()
+        assert row.boundary_for == boundary_digest(row)
+
+    def test_a_raw_disable_and_re_enable_is_not_detected(self, worker):
+        """
+        The documented limit, asserted so it cannot drift into a surprise.
+
+        A digest cannot see a round trip. Disabling and re-enabling outside
+        the write API leaves every column it covers exactly as it found
+        them, so the boundary still looks current and a tick from before the
+        resume can fire. update_schedule moves the boundary; queryset.update
+        does not.
+        """
+        row = a_minutely()
+        worker._schedule_source.schedules()
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
+        assert worker.dispatch_schedules() == 1
+
+    def test_the_same_pause_through_the_write_api_is_detected(self, worker):
+        row = a_minutely()
+        worker._schedule_source.schedules()
+        update_schedule(row, enabled=False)
+        update_schedule(row, enabled=True)
+        assert worker.dispatch_schedules() == 0
+
+
+class TestTheWriteApiCannotLoseAnUpdate:
+    def test_a_stale_instance_cannot_undo_a_resume(self):
+        # Editor A holds a copy, editor B pauses and resumes, then A saves an
+        # unrelated field. A's copy carries the old boundary, and writing
+        # every field from it would put that boundary back.
+        row = a_minutely()
+        stale = OxSchedule.objects.get(pk=row.pk)
+        update_schedule(row, enabled=False)
+        update_schedule(row, enabled=True)
+        resumed_boundary = OxSchedule.objects.get(pk=row.pk).start_time
+
+        update_schedule(stale, name="renamed")
+
+        after = OxSchedule.objects.get(pk=row.pk)
+        assert after.name == "renamed"
+        assert after.start_time == resumed_boundary, (
+            "a stale instance wrote its old boundary over the resumed one"
+        )
+
+
+class TestNothingUnserialisableReachesTheEnqueue:
+    """
+    A task is enqueued as JSON. A form declares what its arguments clean to,
+    and only some of those survive that. Checked at the write, at the read,
+    and caught at dispatch, because a row can be written around all of it.
+    """
+
+    def _register(self, key, field):
+
+        from django_ox.registry import ArgsForm, ScheduleKind, register
+
+        ns = {"value": field}
+        form = type("_F", (ArgsForm,), ns)
+        register(ScheduleKind(key=key, task=tasks.add, form=form))
+        return form
+
+    @pytest.mark.parametrize(
+        ("field_name", "raw"),
+        [
+            ("DateField", "2026-01-01"),
+            ("DateTimeField", "2026-01-01 00:00"),
+            ("DecimalField", "1.5"),
+            ("DurationField", "1:00:00"),
+            ("UUIDField", "8c8b0a5e-0a4e-4a6e-9b6a-3f7c1d2e5a90"),
+        ],
+    )
+    def test_a_form_cleaning_to_a_non_json_value_is_refused_at_the_write(
+        self, field_name, raw
+    ):
+        from django import forms
+        from django.core.exceptions import ValidationError
+
+        self._register("dated", getattr(forms, field_name)())
+        with pytest.raises(ValidationError) as caught:
+            a_minutely(name="dated", task_key="dated", arguments={"value": raw})
+        assert "arguments" in caught.value.message_dict
+
+    def test_such_a_row_written_around_validation_does_not_stop_the_others(
+        self, worker
+    ):
+        # The failure this class exists for: the healthy schedule beside it
+        # fired nothing, because the error escaped the enqueue.
+        from django import forms
+
+        self._register("dated", forms.DateField())
+        OxSchedule.objects.create(
+            name="dated",
+            task_key="dated",
+            trigger="cron",
+            cron="* * * * *",
+            arguments={"value": "2026-01-01"},
+            start_time=timezone.now() - timedelta(minutes=5),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        a_minutely()
+        assert worker.dispatch_schedules() == 1
+        assert OxTask.objects.count() == 1
+
+    def test_an_unexpected_error_skips_one_schedule_not_the_pass(
+        self, worker, monkeypatch
+    ):
+        # Not a value problem: whatever goes wrong for one schedule, the
+        # others in the same pass still run.
+        #
+        # Injected at _to_schedule rather than into the snapshot, because
+        # dispatch rebuilds the schedule from the row inside the transaction
+        # and a stub placed on the snapshot is discarded before it is used.
+        import dataclasses
+
+        class _Explodes:
+            backend = "default"
+
+            def enqueue(self, *args, **kwargs):
+                raise RuntimeError("something nobody predicted")
+
+        a_minutely(name="first")
+        a_minutely(name="second")
+
+        source = worker._schedule_source
+        build = source._to_schedule
+
+        def sabotage(row):
+            built = build(row)
+            if row.name == "first":
+                return dataclasses.replace(built, task=_Explodes())
+            return built
+
+        monkeypatch.setattr(source, "_to_schedule", sabotage)
+
+        worker.dispatch_schedules()
+        assert OxTask.objects.count() == 1, "the healthy schedule did not run"
+
+
+class TestARowChangedOutsideTheWriteApiIsFound:
+    """
+    The change marker is bumped by this package's write functions and by
+    nothing else, so a raw write moves nothing a worker watches. Detection
+    used to sit inside the dispatch transaction, which a row only reaches
+    if the cached copy says a tick is due, so a row whose cached copy said
+    otherwise was never examined at all.
+    """
+
+    def _source(self, worker, interval=0.0001):
+        source = worker._schedule_source
+        source._reconcile_interval = interval
+        return source
+
+    def test_a_passed_end_time_no_longer_hides_a_retime(self, worker):
+        # The cached copy says the schedule ended, so no tick is ever due and
+        # the dispatch transaction is never entered. It stayed invisible.
+        row = a_minutely(
+            cron="0 * * * *",
+            start_time=timezone.now() - timedelta(days=2),
+            end_time=timezone.now() - timedelta(hours=2),
+        )
+        source = self._source(worker)
+        source.schedules()
+        OxSchedule.objects.filter(pk=row.pk).update(
+            trigger="interval", cron="", every_seconds=60, end_time=None
+        )
+        for _ in range(3):
+            worker.dispatch_schedules()
+        row.refresh_from_db()
+        assert row.boundary_for == boundary_digest(row), (
+            "the row changed and no worker ever noticed"
+        )
+
+    def test_a_row_re_enabled_outside_the_write_api_is_found(self, worker):
+        # Disabled rows are not read at all, so this one is neither in the
+        # cache to refresh nor in the query that builds one.
+        row = a_minutely()
+        update_schedule(row, enabled=False)
+        source = self._source(worker)
+        assert source.schedules() == []
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
+        assert [s.name for s in source.schedules()] == ["minutely"]
+
+    def test_a_row_created_outside_the_write_api_is_found(self, worker):
+        source = self._source(worker)
+        assert source.schedules() == []
+        OxSchedule.objects.create(
+            name="raw",
+            task_key="report",
+            trigger="cron",
+            cron="* * * * *",
+            start_time=timezone.now() - timedelta(minutes=5),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        assert [s.name for s in source.schedules()] == ["raw"]
+
+    def test_the_marker_still_short_circuits_between_reconciles(
+        self, worker, django_assert_num_queries
+    ):
+        # The backstop must not turn every pass into a full read. Between
+        # reconciles a pass costs exactly the one marker read.
+        a_minutely()
+        source = worker._schedule_source
+        source._reconcile_interval = 3600
+        source.schedules()
+        with django_assert_num_queries(1):
+            source.schedules()
+
+    def test_the_reconcile_reads_the_rows_again(
+        self, worker, django_assert_num_queries
+    ):
+        # And when it is due, it costs the marker read plus the row read.
+        a_minutely()
+        source = worker._schedule_source
+        source._reconcile_interval = 0.0001
+        source.schedules()
+        with django_assert_num_queries(2):
+            source.schedules()
+
+    def test_a_disabled_row_leaves_the_cache_when_dispatch_finds_it_gone(
+        self, worker, monkeypatch
+    ):
+        row = a_minutely()
+        source = worker._schedule_source
+        source._reconcile_interval = 3600
+        held = source.schedules()
+        assert len(held) == 1
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        worker.dispatch_schedules()
+        assert source._cached == [], "a schedule that cannot fire stayed cached"
+
+    def test_a_retime_is_found_without_waiting_for_the_next_tick(self, worker):
+        # A yearly schedule retimed in June. No tick is due for months, so
+        # the dispatch transaction is never entered and the check inside it
+        # never runs. Reading the rows is the only thing that can notice.
+        row = a_minutely(
+            cron="0 3 1 1 *",  # 03:00 on 1 January
+            start_time=timezone.now() - timedelta(days=2),
+        )
+        source = self._source(worker)
+        source.schedules()
+        OxSchedule.objects.filter(pk=row.pk).update(cron="0 4 1 1 *")
+        for _ in range(3):
+            worker.dispatch_schedules()
+        row.refresh_from_db()
+        assert row.boundary_for == boundary_digest(row), (
+            "a retime went unnoticed because no tick was due to carry it"
+        )
+
+
+class TestADroppedTickIsReportedOnce:
+    def test_a_tick_already_recorded_is_not_reported_as_dropped(
+        self, worker, caplog, monkeypatch
+    ):
+        # The deadline was checked before the already-fired suppression, so
+        # a tick that had run was re-reported as dropped on every later
+        # pass. For a daily schedule that is a warning a second for a day,
+        # and the docs say this event can be alerted on.
+        #
+        # The clock has to move: the tick must be fresh when it fires and
+        # stale when it is looked at again, which is the whole shape of the
+        # defect.
+        import logging
+
+        from django.utils import timezone as tz
+
+        a_minutely(
+            cron="0 * * * *",
+            starting_deadline_seconds=120,
+            start_time=tz.now() - timedelta(days=2),
+        )
+        real_now = tz.now().replace(minute=0, second=1, microsecond=0)
+        clock = {"now": real_now}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+
+        assert worker.dispatch_schedules() == 1, "it should fire while fresh"
+
+        clock["now"] = real_now + timedelta(minutes=30)  # same tick, now stale
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="django_ox"):
+            for _ in range(5):
+                worker.dispatch_schedules()
+        dropped = [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "schedule_tick_dropped"
+        ]
+        assert dropped == [], (
+            f"a tick that already fired was reported dropped {len(dropped)} times"
+        )
+
+    def test_a_genuinely_late_tick_is_still_reported(self, worker, caplog):
+        import logging
+
+        a_minutely(
+            cron="0 * * * *",
+            start_time=timezone.now() - timedelta(days=2),
+            starting_deadline_seconds=60,
+        )
+        with caplog.at_level(logging.WARNING, logger="django_ox"):
+            worker.dispatch_schedules()
+        assert any(
+            getattr(r, "event", None) == "schedule_tick_dropped" for r in caplog.records
+        )
