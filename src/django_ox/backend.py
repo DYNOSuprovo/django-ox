@@ -201,6 +201,22 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E006",
                 )
             )
+        # Registered here as well as by the decorator, because a check runs
+        # without importing application code and this is the only channel it
+        # can see. Registration is idempotent for an identical kind, so a key
+        # declared in both channels is not a collision.
+        from .registry import kinds_from_options
+
+        try:
+            kinds_from_options(self.options, self.alias)
+        except ImproperlyConfigured as exc:
+            errors.append(
+                checks.Error(
+                    str(exc),
+                    hint="Fix the SCHEDULABLE_TASKS entry of this backend's OPTIONS.",
+                    id="django_ox.E007",
+                )
+            )
         from .timeouts import lease_timing_problems, task_timeout_problems
 
         for problem in lease_timing_problems(self.options):
