@@ -22,13 +22,13 @@ in the middle of a step.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Collection, Mapping
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import Any
 
 from django.core.exceptions import ImproperlyConfigured
-from django.utils import timezone
 
 __all__ = [
     "DEFAULT_GRACE",
@@ -59,6 +59,17 @@ RECYCLE_EXIT_CODE = 75
 # asgiref's choosing, with the caller's context copied across.
 _deadline: ContextVar[datetime | None] = ContextVar("django_ox_deadline", default=None)
 
+# The same deadline on the clock the watchdog actually enforces against.
+# `deadline()` answers "when", which is a wall-clock question and has to stay a
+# wall-clock answer. `remaining()` answers "how long have I got", which is the
+# question the enforcer settles, and it settles it on `time.monotonic()`. Read
+# off the wall clock, the two disagree for as long as an NTP step lasts: a
+# backwards correction leaves a task confident it has seconds in hand after the
+# watchdog has already fired, and a forwards one makes a task give up early.
+_deadline_monotonic: ContextVar[float | None] = ContextVar(
+    "django_ox_deadline_monotonic", default=None
+)
+
 
 def deadline() -> datetime | None:
     """
@@ -72,11 +83,15 @@ def remaining() -> float | None:
     """
     Seconds left before the running attempt times out, negative once the
     deadline has passed, or None when there is no limit.
+
+    Measured on the same monotonic clock the worker enforces the deadline
+    with, so a clock correction cannot put this answer and the timeout that
+    actually fires on different sides of the same instant.
     """
-    at = _deadline.get()
-    if at is None:
+    until = _deadline_monotonic.get()
+    if until is None:
         return None
-    return (at - timezone.now()).total_seconds()
+    return until - time.monotonic()
 
 
 class TaskTimeouts:
@@ -132,6 +147,36 @@ def _seconds(value: Any, where: str, *, unlimited: bool = True) -> float | None:
             f"{'; None means no limit' if unlimited else ''}."
         )
     return float(value)
+
+
+#: Options the worker reads as a number of seconds. A deploy that gets one of
+#: them wrong stops at `manage.py check` rather than in the poll loop.
+LEASE_TIMINGS = ("LOCK_TIMEOUT", "BACKOFF_INITIAL", "BACKOFF_MAX")
+
+
+def lease_timing_problems(options: Mapping[str, Any]) -> list[str]:
+    """
+    Every way the worker's timing options are invalid, one sentence each.
+
+    Validated by the same helper as the timeout options, so the three lease
+    timings accept exactly what TASK_TIMEOUT accepts: a positive, finite
+    number of seconds, and nothing else. `True` is not one second and 1e300 is
+    not a duration.
+
+    Deliberately not a check on the relationships between them.
+    `renew_interval > lock_timeout` would be the pair worth refusing, and it
+    cannot be configured: the renewal interval is derived from the lock
+    timeout rather than read from options.
+    """
+    problems: list[str] = []
+    for name in LEASE_TIMINGS:
+        if name not in options:
+            continue
+        try:
+            _seconds(options[name], f"OPTIONS[{name!r}]", unlimited=False)
+        except ImproperlyConfigured as exc:
+            problems.append(str(exc))
+    return problems
 
 
 def task_timeout_problems(

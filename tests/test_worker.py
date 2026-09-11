@@ -42,9 +42,8 @@ def collect_task_finished():
 
 def reap_away(worker, db_task):
     """Age this claim past lock_timeout and let the reaper take the row."""
-    OxTask.objects.filter(pk=db_task.pk).update(
-        locked_at=timezone.now() - timedelta(seconds=worker.lock_timeout + 10)
-    )
+    stale = timezone.now() - timedelta(seconds=worker.lock_timeout + 10)
+    OxTask.objects.filter(pk=db_task.pk).update(locked_at=stale, lease_expires_at=stale)
     assert worker.reap() == 1
 
 
@@ -218,7 +217,7 @@ class TestReaper:
         add.enqueue(1, 2)
         db_task = worker.claim_one()
         stale = timezone.now() - timedelta(seconds=worker.lock_timeout + 10)
-        updates = {"locked_at": stale}
+        updates = {"locked_at": stale, "lease_expires_at": stale}
         if attempts is not None:
             updates["attempts"] = attempts
         OxTask.objects.filter(pk=db_task.pk).update(**updates)
@@ -250,7 +249,7 @@ class TestReaper:
     def test_reaper_records_a_lost_lease_and_not_a_failure(self, worker):
         """
         Attempts exhausted is the one case the reaper cannot requeue out of,
-        and it is the case it used to invent a verdict for. It has watched a
+        and it is the case it must not invent a verdict for. It has watched a
         lock go quiet and nothing else, so LOST is the whole of what it may
         write, and it announces nothing.
         """
@@ -351,7 +350,7 @@ class TestLeaseFencesTerminalWrites:
 
     def test_stale_retry_does_not_unterminal_a_finished_task(self, worker):
         """
-        The reported race: worker A is reaped, worker B runs the task to
+        The race: worker A is reaped, worker B runs the task to
         SUCCESSFUL, and A then fails with retries left and writes READY over
         the top. A completed task went back on the queue.
         """
@@ -710,10 +709,8 @@ class TestLostState:
 
     def test_lost_is_not_pending_for_completion_counting(self, worker):
         """
-        The paid batches feature counts unfinished members as
-        (READY, RUNNING) against this column. A fifth value is therefore
-        settled by construction, which is the property that stops a batch
-        with a lost member hanging.
+        Anything counting unfinished work treats (READY, RUNNING) as pending
+        against this column, so a fifth value is settled by construction.
         """
         self._lose_the_lease(worker)
 
@@ -926,9 +923,9 @@ class TestLeaseRenewalUnderTheReaper:
     slow and reclaims only workers that actually stopped reporting.
 
     The timings below are a ratio rather than a stopwatch. What is under
-    test is the shape the worker documents -- a renewal every
+    test is the shape the worker documents, a renewal every
     LOCK_TIMEOUT / 3, so two consecutive renewals can be missed before the
-    reaper is entitled to conclude anything -- and the ratio, not the
+    reaper is entitled to conclude anything, and the ratio, not the
     absolute value, is what these tests assert. The absolute values are
     scaled so that a single renewal round-trip on a networked database, or
     under a coverage tracer, still lands well inside the lease. A tighter

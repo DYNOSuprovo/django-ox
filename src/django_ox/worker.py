@@ -23,7 +23,6 @@ from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import (
-    DatabaseError,
     Error,
     IntegrityError,
     close_old_connections,
@@ -31,8 +30,8 @@ from django.db import (
     router,
     transaction,
 )
-from django.db.models import Max, Q, QuerySet
-from django.db.models.expressions import Combinable
+from django.db.models import DateTimeField, ExpressionWrapper, F, Max, Q, QuerySet
+from django.db.models.expressions import Combinable, CombinedExpression
 from django.db.models.functions import Now
 from django.utils import timezone
 from django.utils.crypto import get_random_string
@@ -56,6 +55,7 @@ from .schedules import schedule_name_collisions, schedules_from_options
 from .timeouts import (
     RECYCLE_EXIT_CODE,
     _deadline,
+    _deadline_monotonic,
     task_timeouts_from_options,
 )
 
@@ -197,6 +197,11 @@ class _Watch:
 
     ident: int
     db_task: OxTask
+    #: The attempt this watch was armed for, as the executing thread
+    #: registered it. Taken at arm time because the watchdog moves the epoch
+    #: on its own copy of db_task when it gives up, and the drain has to
+    #: recognise the attempt the pool thread is still inside.
+    attempt: tuple[Any, int]
     timeout: float
     started: float
     deadline: float
@@ -217,13 +222,73 @@ class _Watch:
 # or has already been answered.
 WRITABLE_STATUSES = (OxTask.Status.RUNNING, OxTask.Status.LOST)
 
+# Exhausted rows retired per reap pass. See Worker.reap.
+REAP_BATCH_DEFAULT = 100
+
+# The most of one traceback kept on the row, in BYTES of UTF-8. A traceback's
+# length is set by the failure, not by us: a deep recursion, a chained
+# exception, or a library that prints locals can produce megabytes, and
+# `errors` holds one per failed attempt. Both ends are worth keeping, where the
+# call came from and what actually raised, so an oversized traceback keeps its
+# head and its tail with a marker between them saying what was dropped.
+#
+# Bytes rather than characters because the column is sized in bytes and an
+# operator reads this number to size it. A character limit lets one emoji in an
+# exception message store four times the stated cap.
+MAX_STORED_TRACEBACK = 16384
+_TRACEBACK_HEAD = 4096
+
+
+def _utf8_prefix(text: str, limit: int) -> str:
+    """The longest prefix of `text` that encodes within `limit` bytes."""
+    encoded = text.encode()[:limit]
+    # A cut can land inside a multi-byte sequence; drop the partial character.
+    return encoded.decode(errors="ignore")
+
+
+def _utf8_suffix(text: str, limit: int) -> str:
+    """The longest suffix of `text` that encodes within `limit` bytes."""
+    if limit <= 0:
+        return ""
+    encoded = text.encode()[-limit:]
+    return encoded.decode(errors="ignore")
+
+
+def _stored_traceback(exc: BaseException) -> str:
+    """
+    The exception's traceback, bounded in bytes, with any elision made visible.
+
+    The marker counts towards the bound, so the whole returned string encodes
+    within MAX_STORED_TRACEBACK. That is what the documentation promises and
+    what an operator sizing the column needs it to mean.
+    """
+    text = "".join(format_exception(exc))
+    size = len(text.encode())
+    if size <= MAX_STORED_TRACEBACK:
+        return text
+    dropped = size - MAX_STORED_TRACEBACK
+    marker = (
+        f"\n... {dropped} bytes of this traceback were not stored "
+        f"(limit {MAX_STORED_TRACEBACK}) ...\n"
+    )
+    budget = MAX_STORED_TRACEBACK - len(marker.encode())
+    if budget <= 0:  # pragma: no cover - only if the limit is set absurdly low
+        return _utf8_prefix(text, MAX_STORED_TRACEBACK)
+    head = min(_TRACEBACK_HEAD, budget)
+    return _utf8_prefix(text, head) + marker + _utf8_suffix(text, budget - head)
+
+
 # Single-statement claim for PostgreSQL: the SKIP LOCKED subselect, the claim
 # UPDATE, and the per-attempt bookkeeping are one round trip, atomic in
 # autocommit. The equivalent multi-statement path costs 5 round trips.
 #
-# The claim's own timestamps are STATEMENT_TIMESTAMP(), which is what Django's
-# Now() compiles to on PostgreSQL, so the lock clock and the reaper's clock are
-# the same clock even when the worker and the reaper run on different hosts.
+# The claim's own timestamps come from {lease_clock}, which is
+# STATEMENT_TIMESTAMP() when USE_TZ is on and a parameter carrying the worker's
+# clock when it is off. That is not a style choice: _lease_now() makes the same
+# switch, and renew_leases and the reaper's cutoff both go through it. One
+# column, one clock. Stamping this from the server while the renewal stamps
+# from the worker would put two on it, and a worker whose clock ran behind the
+# server's would renew to a timestamp the reaper reads as already expired.
 # run_after is the exception and is still compared against the worker's clock,
 # because that is the clock the retry that wrote it used; see _ready_queryset.
 # lease_epoch advances here too: the increment and the claim are one statement,
@@ -232,11 +297,12 @@ POSTGRES_CLAIM_SQL = """
 UPDATE "{table}" SET
     "status" = %(running)s,
     "locked_by" = %(worker_id)s,
-    "locked_at" = STATEMENT_TIMESTAMP(),
+    "locked_at" = {lease_clock},
+    "lease_expires_at" = {lease_clock} + %(lease_ttl)s,
     "lease_epoch" = "lease_epoch" + 1,
     "attempts" = "attempts" + 1,
-    "started_at" = COALESCE("started_at", STATEMENT_TIMESTAMP()),
-    "last_attempted_at" = STATEMENT_TIMESTAMP(),
+    "started_at" = COALESCE("started_at", {lease_clock}),
+    "last_attempted_at" = {lease_clock},
     "worker_ids" = "worker_ids" || %(worker_id_json)s::jsonb
 WHERE "id" = (
     SELECT "id" FROM "{table}"
@@ -258,10 +324,17 @@ def _elapsed_ms(started: float) -> int:
 def _lease_now() -> Combinable | datetime:
     """The clock that stamps lease timestamps.
 
-    Database-side time is the right clock for a lease, because it is one clock
-    for every worker and for the reaper even when they run on different hosts.
-    It only agrees with what the columns already hold when USE_TZ is on, and
-    that is the whole of this function.
+    Database-side time is the right clock for a lease, because on PostgreSQL
+    and MySQL it is one clock for every worker and for the reaper even when
+    they run on different hosts. It only agrees with what the columns already
+    hold when USE_TZ is on, and that is the whole of this function.
+
+    Not on SQLite. Now() compiles there to STRFTIME(..., 'NOW'), which SQLite
+    evaluates in the process that ran the statement, so there is no server
+    clock to share and every worker stamps on its own whatever USE_TZ says.
+    That is a reason to run SQLite on one host rather than a reason to stamp
+    it differently: a shared file over a network filesystem has worse problems
+    than clock drift.
 
     Django's Now() compiles to STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW') on SQLite,
     and SQLite's 'now' is always UTC, so under USE_TZ=False it writes UTC into
@@ -274,9 +347,7 @@ def _lease_now() -> Combinable | datetime:
     TIME_ZONE.
 
     So: the database's clock where the two agree, the worker's clock where they
-    do not. The second case is what every timestamp here used before the lease
-    moved to database time, so it carries no behaviour that has not already
-    shipped.
+    do not.
 
     Only the lease is stamped this way: locked_at, the started_at and
     last_attempted_at written beside it in the claim, and the cutoff the reaper
@@ -284,19 +355,44 @@ def _lease_now() -> Combinable | datetime:
     is one, and _ready_queryset says why. finished_at is the other: nothing
     fences on it, the reaper never reads it, and it is written by the statement
     that gives the lease up rather than by one that holds it. Every comparison
-    against it here -- ox_prune's cutoff, the throughput window in stats -- is
+    against it here (ox_prune's cutoff, the throughput window in stats) is
     against timezone.now(), and django_ox.actions already stamps it from there,
-    so process time is the clock it is read on. Stamping it database-side also
-    cost a round trip per task, because a value the database computes has to be
-    read back before the in-memory row can be trusted, and _write_outcome is on
-    the path every task takes.
+    so process time is the clock it is read on. A database-computed value would
+    need a read-back, and _write_outcome is on the path every task takes.
     """
     return Now() if settings.USE_TZ else timezone.now()
+
+
+def _lease_expiry(seconds: float) -> Any:
+    """
+    When a lease taken now stops being valid, on the lease clock.
+
+    The same clock as _lease_now(), because the reaper compares the two and a
+    row whose expiry came from one clock and whose cutoff came from another is
+    exactly the disagreement storing it is meant to remove.
+    """
+    # Built on _lease_now() rather than repeating its choice, so anything that
+    # moves the lease clock moves the expiry with it. Stamping this from the
+    # process while locked_at came from the database, or the reverse, would put
+    # two clocks on one lease, which is the disagreement the stored expiry
+    # exists to remove rather than relocate.
+    now = _lease_now()
+    if settings.USE_TZ:
+        return ExpressionWrapper(
+            now + timedelta(seconds=seconds), output_field=DateTimeField()
+        )
+    return now + timedelta(seconds=seconds)
 
 
 class Worker:
     """
     Claims READY tasks and executes them, at least once.
+
+    One worker holds the lease on a task at a time, and the lease number
+    fences the row rather than the execution: two workers cannot write the
+    same row, and two threads can still be inside the same task body, which
+    the production page sets out in full. Task bodies are idempotent, the same
+    as under any at-least-once queue.
 
     Claiming uses a single UPDATE ... SKIP LOCKED ... RETURNING statement on
     PostgreSQL, SELECT ... FOR UPDATE SKIP LOCKED where another database
@@ -341,6 +437,8 @@ class Worker:
         poll_interval: float = 1.0,
         lock_timeout: float | None = None,
         reap_interval: float | None = None,
+        reap_batch: int | None = None,
+        recycle_drain_budget: float | None = None,
         renew_interval: float | None = None,
         schedule_interval: float | None = None,
         backoff_initial: float | None = None,
@@ -354,7 +452,7 @@ class Worker:
         if not isinstance(backend, OxBackend):
             raise ImproperlyConfigured(
                 f"Backend {backend_alias!r} is {type(backend).__qualname__}, "
-                "not a OxBackend."
+                "not an OxBackend."
             )
         self.backend = backend
         options = backend.options
@@ -376,6 +474,27 @@ class Worker:
             reap_interval
             if reap_interval is not None
             else min(30.0, max(self.lock_timeout / 2, 1.0))
+        )
+        # Rows one reap pass may touch, on either branch. The requeue
+        # branch names what it requeues in its record and the exhausted
+        # branch writes a record specific to each row, so both take rows
+        # in bounded batches and leave the remainder to the next pass.
+        self.reap_batch: int = (
+            reap_batch if reap_batch is not None else REAP_BATCH_DEFAULT
+        )
+        if self.reap_batch < 1:
+            # A zero slices to nothing, so the reaper would retire no
+            # exhausted row ever and leave them RUNNING for good, silently.
+            raise ImproperlyConfigured(
+                f"reap_batch must be at least 1, got {self.reap_batch!r}."
+            )
+        # How long a recycling worker waits on its healthy in-flight tasks
+        # before leaving them to the reaper. See _drain for why this is the
+        # lease and not a number of its own.
+        self.recycle_drain_budget: float = (
+            recycle_drain_budget
+            if recycle_drain_budget is not None
+            else self.lock_timeout
         )
         # A third of the timeout leaves room for two consecutive renewals to
         # be missed (a slow query, a blip, one skipped scheduling slot)
@@ -455,13 +574,22 @@ class Worker:
         self._watch_lock = Lock()
         self._watch_cv = Condition(self._watch_lock)
         self._watchdog: Thread | None = None
-        # Idents of pool threads the backstop gave up on. The drain does not
-        # wait for them; they die with the process.
-        self._stuck: set[int] = set()
+        # Pool threads the backstop gave up on, as ident -> the attempt it was
+        # running when we gave up. The drain does not wait for those; they die
+        # with the process. The attempt is part of the key because a pool
+        # thread is reused: its ident stays alive and idle after a stuck task
+        # finally returns, and again under the next task, so an ident alone
+        # cannot say whether the thread is still inside the work we abandoned.
+        self._stuck: dict[int, tuple[Any, int]] = {}
+        # What each pool thread is executing right now, ident -> attempt.
+        # Present only for the duration of an attempt.
+        self._running_on: dict[int, tuple[Any, int]] = {}
         self._recycling = False
         # Set once the worker has said that a tracing tool is holding
         # timeouts to the backstop, so it is said once and not per attempt.
         self._backstop_only_notice = False
+        # Said once per worker, not once per claim.
+        self._claim_filter_notice = False
         self._backstop_only_lock = Lock()
         if self.timeouts.enabled and _inject_async_exc is None:
             self._backstop_only_notice = True
@@ -511,8 +639,10 @@ class Worker:
 
         Applied to the candidate queryset on the two claim paths that build
         one. claim_filter_sql() is the same condition for the path that does
-        not. A subclass that implements one and not the other narrows two of
-        the three supported databases and silently does nothing on the third.
+        not. A subclass that overrides this hook alone keeps its condition on
+        every database: on PostgreSQL the worker takes the
+        ``SELECT ... FOR UPDATE SKIP LOCKED`` path, which applies it, and logs
+        ``claim_filter_sql_missing`` once.
         """
         return None
 
@@ -529,6 +659,46 @@ class Worker:
         """
         return "", {}
 
+    def _postgresql_honours_the_claim_filter(self) -> bool:
+        """
+        May the single-statement PostgreSQL claim be used?
+
+        Only when this worker's claim filter reaches it. The fast path builds
+        its own SQL, so it reads `claim_filter_sql()` and knows nothing about
+        `claim_filter_q()`. A subclass that overrides the queryset hook alone
+        would narrow SQLite and MySQL and claim the very rows it meant to
+        exclude on PostgreSQL, with nothing raised and nothing logged: a
+        condition that holds on two databases and does nothing on the third.
+
+        Falling back to the `SELECT ... FOR UPDATE SKIP LOCKED` path rather
+        than refusing to start. Both hooks are a published stability surface,
+        so a subclass that works today on two databases has to keep working;
+        it gives up one statement per claim on PostgreSQL and gets the
+        exclusion it asked for. A subclass that implements both keeps the fast
+        path.
+        """
+        if self.claim_filter_q() is None:
+            return True
+        fragment, _ = self.claim_filter_sql()
+        if fragment:
+            return True
+        if not self._claim_filter_notice:
+            self._claim_filter_notice = True
+            logger.warning(
+                "%s overrides claim_filter_q() but not claim_filter_sql(), so "
+                "the single-statement PostgreSQL claim cannot apply it. Using "
+                "the SELECT ... FOR UPDATE SKIP LOCKED path instead, which "
+                "costs one extra statement per claim. Implement "
+                "claim_filter_sql() to keep the faster path.",
+                type(self).__name__,
+                extra={
+                    "event": "claim_filter_sql_missing",
+                    "worker_id": self.worker_id,
+                    "worker_class": type(self).__name__,
+                },
+            )
+        return False
+
     def _ready_queryset(self) -> QuerySet[OxTask]:
         # run_after stays on process time, on both sides of this comparison
         # and in the retry that writes it. Database-side time is the right
@@ -536,11 +706,13 @@ class Worker:
         # milliseconds and Now() + interval renders microseconds, and text
         # comparison then reads "12:00:00.604000" as later than
         # "12:00:00.604", so a retry written with no backoff is not eligible
-        # for up to a millisecond (measured: 86 of 200). Skew in run_after
+        # for up to a millisecond. Skew in run_after
         # only makes a retry early or late; mixing the two clocks across a
         # comparison would be worse than either clock consistently.
-        queryset = OxTask.objects.filter(status=OxTask.Status.READY).filter(
-            Q(run_after__isnull=True) | Q(run_after__lte=timezone.now())
+        queryset = (
+            OxTask.objects.using(self._db_alias)
+            .filter(status=OxTask.Status.READY)
+            .filter(Q(run_after__isnull=True) | Q(run_after__lte=timezone.now()))
         )
         if self.queues:
             queryset = queryset.filter(queue_name__in=self.queues)
@@ -558,6 +730,7 @@ class Worker:
             "status": OxTask.Status.RUNNING,
             "locked_by": self.worker_id,
             "locked_at": _lease_now(),
+            "lease_expires_at": _lease_expiry(self.lock_timeout),
             "lease_epoch": candidate.lease_epoch + 1,
             "attempts": candidate.attempts + 1,
             "started_at": candidate.started_at or _lease_now(),
@@ -572,12 +745,22 @@ class Worker:
         # the exception.
         queue_clause = 'AND "queue_name" = ANY(%(queues)s)' if self.queues else ""
         extra_clause, extra_params = self.claim_filter_sql()
+        # One clock stamps the lease, whichever it is. _lease_now() decides
+        # which; this statement has to agree with it or the renewal and the
+        # reaper are judging a column a different clock wrote.
+        lease_clock = "STATEMENT_TIMESTAMP()" if settings.USE_TZ else "%(lease_now)s"
         sql = POSTGRES_CLAIM_SQL.format(
             table=OxTask._meta.db_table,
             queue_clause=queue_clause,
             extra_clause=extra_clause,
+            lease_clock=lease_clock,
         )
-        rows = OxTask.objects.raw(
+        # db_manager, not objects.raw: a RawQuerySet routes through
+        # db_for_read, and unlike select_for_update() it does not mark itself
+        # for write, so Django has no way to know this SQL is an UPDATE. With a
+        # read replica in the router the claim either raises on a read-only
+        # standby or lands off-primary, and neither is a claim.
+        rows = OxTask.objects.db_manager(self._db_alias).raw(
             sql,
             {
                 "running": OxTask.Status.RUNNING,
@@ -585,6 +768,10 @@ class Worker:
                 "worker_id": self.worker_id,
                 "worker_id_json": json.dumps([self.worker_id]),
                 "now": run_after_cutoff,
+                "lease_now": _lease_now() if not settings.USE_TZ else None,
+                # psycopg adapts a timedelta to an interval, so this works
+                # against either lease clock without branching the SQL.
+                "lease_ttl": timedelta(seconds=self.lock_timeout),
                 "queues": self.queues,
                 **extra_params,
             },
@@ -608,7 +795,11 @@ class Worker:
     def _claim_one(self) -> OxTask | None:
         connection = connections[self._db_alias]
         skip_locked = connection.features.has_select_for_update_skip_locked
-        if connection.vendor == "postgresql" and skip_locked:
+        if (
+            connection.vendor == "postgresql"
+            and skip_locked
+            and self._postgresql_honours_the_claim_filter()
+        ):
             return self._claim_one_postgresql(timezone.now())
         if skip_locked:
             with transaction.atomic(using=self._db_alias):
@@ -617,7 +808,7 @@ class Worker:
                 )
                 if candidate is None:
                     return None
-                OxTask.objects.filter(pk=candidate.pk).update(
+                OxTask.objects.using(self._db_alias).filter(pk=candidate.pk).update(
                     **self._claim_fields(candidate)
                 )
                 # The claim wrote database-side timestamps, which cannot be
@@ -633,12 +824,16 @@ class Worker:
         # writes.
         for candidate in self._ready_queryset()[:CLAIM_BATCH_SIZE]:
             granted_epoch = candidate.lease_epoch + 1
-            claimed = OxTask.objects.filter(
-                pk=candidate.pk,
-                status=OxTask.Status.READY,
-                attempts=candidate.attempts,
-                lease_epoch=candidate.lease_epoch,
-            ).update(**self._claim_fields(candidate))
+            claimed = (
+                OxTask.objects.using(self._db_alias)
+                .filter(
+                    pk=candidate.pk,
+                    status=OxTask.Status.READY,
+                    attempts=candidate.attempts,
+                    lease_epoch=candidate.lease_epoch,
+                )
+                .update(**self._claim_fields(candidate))
+            )
             if claimed:
                 held = self._reload_claimed(candidate.pk, granted_epoch)
                 if held is None:
@@ -658,13 +853,17 @@ class Worker:
         compare against an epoch this execution was never granted, which is
         what lets a straggler's outcome overwrite the real holder's.
 
-        Pinning the read to the granted epoch turns that into an honest miss.
+        Pinning the read to the granted epoch turns that into a miss.
         None means the lease was lost inside the gap, so there is nothing here
         to execute. The PostgreSQL path never has the gap, because RETURNING *
         is the same statement, and the SKIP LOCKED path holds a row lock
         across it.
         """
-        return OxTask.objects.filter(pk=pk, lease_epoch=granted_epoch).first()
+        return (
+            OxTask.objects.using(self._db_alias)
+            .filter(pk=pk, lease_epoch=granted_epoch)
+            .first()
+        )
 
     # -- lease renewal -----------------------------------------------------
 
@@ -688,11 +887,18 @@ class Worker:
             pks = {pk for pk, _ in self._in_flight}
         if not pks:
             return 0
-        return OxTask.objects.filter(
-            pk__in=pks,
-            status=OxTask.Status.RUNNING,
-            locked_by=self.worker_id,
-        ).update(locked_at=_lease_now())
+        return (
+            OxTask.objects.using(self._db_alias)
+            .filter(
+                pk__in=pks,
+                status=OxTask.Status.RUNNING,
+                locked_by=self.worker_id,
+            )
+            .update(
+                locked_at=_lease_now(),
+                lease_expires_at=_lease_expiry(self.lock_timeout),
+            )
+        )
 
     def _renewal_loop(self, stop: Event) -> None:
         """Renew until stopped. Runs on its own thread, and its own connection."""
@@ -700,11 +906,21 @@ class Worker:
             while not stop.wait(self.renew_interval):
                 try:
                     self.renew_leases()
-                except DatabaseError:
+                except Exception:
                     # A missed renewal is survivable by design: the interval
                     # is a third of the timeout. Drop the connection so the
                     # next tick reconnects, and keep going, because giving
                     # up here would silently expire every live lease.
+                    #
+                    # Every exception, not a chosen class. Nothing restarts
+                    # this thread and nothing checks it is alive, and a
+                    # renewal loop that stops lets every in-flight lease
+                    # expire. `django.db.InterfaceError` sits beside
+                    # `DatabaseError` under `django.db.Error`, so a dropped
+                    # connection, the likeliest failure here, has to be
+                    # caught too. The consequence of guessing wrong is
+                    # severe and silent, which is exactly when a guess
+                    # should not be made.
                     logger.warning(
                         "Lease renewal failed for worker %s; retrying in %.1fs",
                         self.worker_id,
@@ -737,7 +953,14 @@ class Worker:
         enough for the reaper to requeue the row matches nothing and its
         UPDATE touches zero rows instead of overwriting whatever happened
         next. Handovers are the only thing that moves the number, and every
-        handover moves it.
+        handover that puts the row back on the queue moves it.
+
+        One deliberately does not: the reaper's exhausted branch writes LOST
+        and leaves the epoch alone, and says why. LOST is an open question
+        rather than a settled outcome, and the holder of that epoch is the
+        only party who could still answer it, so it keeps the right to write
+        over the top. Nothing can re-claim such a row, because the claim
+        filters on READY, so no second execution can share the epoch.
 
         WRITABLE_STATUSES is a second lock on the same door. The epoch alone
         is sufficient given that every handover bumps it, and this condition
@@ -764,11 +987,15 @@ class Worker:
         must then abandon the rest of its branch, and in particular must not
         send task_finished for an outcome it does not own.
         """
-        updated = OxTask.objects.filter(
-            pk=db_task.pk,
-            lease_epoch=db_task.lease_epoch,
-            status__in=WRITABLE_STATUSES,
-        ).update(status=status, **fields)
+        updated = (
+            OxTask.objects.using(self._db_alias)
+            .filter(
+                pk=db_task.pk,
+                lease_epoch=db_task.lease_epoch,
+                status__in=WRITABLE_STATUSES,
+            )
+            .update(status=status, **fields)
+        )
         if not updated:
             logger.warning(
                 "Task id=%s path=%s lost its lease on attempt %d/%d; dropping "
@@ -791,9 +1018,13 @@ class Worker:
             setattr(db_task, name, value)
         return True
 
-    def execute(self, db_task: OxTask) -> None:
+    def execute(self, db_task: OxTask, *, inline: bool = False) -> None:
         """
         Run a claimed (RUNNING, locked) task to a terminal or retry state.
+
+        `inline` says this is running on the caller's own thread rather than
+        on the pool, which decides what happens to an exception that was
+        aimed at the process rather than at the task. See _run_attempt.
 
         Per-attempt bookkeeping (started_at, last_attempted_at, worker_ids)
         was already written by the claim UPDATE. The (pk, lease_epoch) pair
@@ -802,22 +1033,30 @@ class Worker:
         is not.
         """
         held = (db_task.pk, db_task.lease_epoch)
+        ident = threading.get_ident()
         with self._in_flight_lock:
             self._in_flight.add(held)
+            self._running_on[ident] = held
         try:
-            self._run_attempt(db_task)
+            self._run_attempt(db_task, inline=inline)
         finally:
             with self._in_flight_lock:
                 self._in_flight.discard(held)
+                if self._running_on.get(ident) == held:
+                    del self._running_on[ident]
 
-    def _run_attempt(self, db_task: OxTask) -> None:
+    def _run_attempt(self, db_task: OxTask, *, inline: bool = False) -> None:
         from .results import task_from_db, task_result_from_db
 
         started = time.monotonic()
         try:
             task = task_from_db(db_task)
             task_result = task_result_from_db(db_task, task=task)
-            task_started.send(sender=type(self.backend), task_result=task_result)
+            # send_robust: these are an observability surface, and a
+            # receiver's exception is not the task's fault. task_started fires
+            # before the function is reached, so a receiver that raises must
+            # not be charged to the task as an attempt.
+            task_started.send_robust(sender=type(self.backend), task_result=task_result)
             logger.debug(
                 "Starting task id=%s path=%s (attempt %d/%d)",
                 db_task.id,
@@ -829,7 +1068,7 @@ class Worker:
             timeout = self.timeouts.for_queue(db_task.queue_name)
             if timeout is None:
                 # No timeout on this queue: the call is the one the worker
-                # made before timeouts existed, frame for frame, so the
+                # made directly, frame for frame, so the
                 # stored traceback of an ordinary failure is unchanged.
                 if task.takes_context:
                     raw_return_value = task.call(
@@ -861,6 +1100,19 @@ class Worker:
             )
             self._discard_connections()
             self._handle_failure(db_task, exc, duration_ms)
+        except (KeyboardInterrupt, SystemExit) as exc:
+            # Aimed at the process, not at this task. On the pool it is
+            # recorded as a failed attempt and kept there deliberately: one
+            # task calling sys.exit() must not be able to stop a fleet, and
+            # raising out of a pool thread would end only that thread anyway.
+            #
+            # Inline is the opposite. run_once() is called from somebody
+            # else's process, and swallowing their Ctrl-C into a task failure
+            # takes an interrupt they aimed at their own program and files it
+            # against the work.
+            if inline:
+                raise
+            self._handle_failure(db_task, exc, _elapsed_ms(started))
         except BaseException as exc:
             self._handle_failure(db_task, exc, _elapsed_ms(started))
         else:
@@ -883,6 +1135,7 @@ class Worker:
                 finished_at=timezone.now(),
                 locked_by=None,
                 locked_at=None,
+                lease_expires_at=None,
             ):
                 return
             logger.info(
@@ -894,7 +1147,7 @@ class Worker:
                     "task_succeeded", db_task, duration_ms=duration_ms
                 ),
             )
-            task_finished.send(
+            task_finished.send_robust(
                 sender=type(self.backend),
                 task_result=task_result_from_db(db_task, task=task),
             )
@@ -914,7 +1167,7 @@ class Worker:
         The attempt is registered with the watchdog for the duration of the
         call, and the attempt's deadline is published for deadline() and
         remaining(). A queue with no timeout never comes here: _run_attempt
-        calls the task directly, as it did before timeouts existed.
+        calls the task directly.
 
         A sync task is interrupted by TaskTimeout raised on this thread, at
         the next bytecode after the deadline. The exception can therefore
@@ -950,6 +1203,7 @@ class Worker:
 
         ident = threading.get_ident()
         token = _deadline.set(None)
+        monotonic_token = _deadline_monotonic.set(None)
         try:
             try:
                 # Registered inside the try, so that a delivery landing
@@ -958,6 +1212,7 @@ class Worker:
                 # the deregistration below like any other.
                 watch = self._arm(ident, db_task, timeout, injectable=True)
                 _deadline.set(watch.deadline_at)
+                _deadline_monotonic.set(watch.deadline)
                 return invoke()
             finally:
                 # The absorbing try lives in this frame on purpose: the
@@ -983,6 +1238,7 @@ class Worker:
             ) from exc
         finally:
             _deadline.reset(token)
+            _deadline_monotonic.reset(monotonic_token)
 
     def _call_async(
         self,
@@ -1029,11 +1285,13 @@ class Worker:
         ident = threading.get_ident()
         watch = self._arm(ident, db_task, timeout, injectable=False)
         token = _deadline.set(watch.deadline_at)
+        monotonic_token = _deadline_monotonic.set(watch.deadline)
         try:
             return async_to_sync(run)()
         finally:
             self._disarm(ident)
             _deadline.reset(token)
+            _deadline_monotonic.reset(monotonic_token)
 
     def _timeout_message(
         self,
@@ -1144,6 +1402,7 @@ class Worker:
             # epoch it moves is never mirrored onto the instance the stuck
             # thread still holds; that thread's own write stays fenced.
             db_task=copy.copy(db_task),
+            attempt=(db_task.pk, db_task.lease_epoch),
             timeout=timeout,
             started=now,
             deadline=now + timeout,
@@ -1166,7 +1425,7 @@ class Worker:
         # 3.14 a with statement acquires the lock one instruction before
         # the block's cleanup covers it, so a delivery attributed to the
         # acquiring call would leave the lock held with nobody to release
-        # it. list(map(...)) makes the acquire and its record one
+        # it. extend(map(...)) makes the acquire and its record one
         # indivisible instruction: `held` is non-empty exactly when this
         # thread took the lock, whatever instruction the delivery hits,
         # and the finally is installed before any of it runs.
@@ -1205,7 +1464,24 @@ class Worker:
                         self._watch_cv.wait(min(remaining, WATCHDOG_MAX_WAIT))
                     stuck = self._fire_due()
                 for watch in stuck:
-                    self._handle_stuck(watch)
+                    try:
+                        self._handle_stuck(watch)
+                    except Exception:
+                        # This thread is the whole of the timeout backstop and
+                        # nothing restarts it mid-attempt, so a failure on one
+                        # watch must not end it for the others. _fire_due has
+                        # already taken this watch out of the table, so the
+                        # loop carries on rather than retrying a watch whose
+                        # grace has passed.
+                        logger.exception(
+                            "Worker %s could not record a stuck attempt; the "
+                            "timeout backstop continues for the others",
+                            self.worker_id,
+                            extra={
+                                "event": "watchdog_error",
+                                "worker_id": self.worker_id,
+                            },
+                        )
         finally:
             connections.close_all()
 
@@ -1300,11 +1576,42 @@ class Worker:
             f"reports is refused by the lease.",
             timeout=watch.timeout,
         )
-        if self._handle_failure(db_task, exc, duration_ms, release=True):
-            # Only now is the thread known to be stuck: the write lost only
-            # if the thread's own outcome landed first, in which case it came
-            # back on its own and the drain must still wait for it.
-            self._stuck.add(watch.ident)
+        try:
+            self._handle_failure(db_task, exc, duration_ms, release=True)
+        except Exception:
+            # Every exception, not a chosen class. The thread is wedged
+            # whether or not this write succeeds, and the recycle below is
+            # what stops the worker keeping a dead pool slot and waiting for
+            # that thread forever; anything that escapes here skips it.
+            #
+            # `django.db.Error` is not a wide enough net. Django raises
+            # ValueError from adapt_datetimefield_value on a naive value, and
+            # a driver can raise UnicodeEncodeError on a traceback character
+            # the column's charset cannot hold. Neither is a database error
+            # by Django's taxonomy, and both reach this path.
+            logger.warning(
+                "Worker %s could not record the stuck attempt for task id=%s; "
+                "recycling anyway",
+                self.worker_id,
+                db_task.id,
+                exc_info=True,
+                extra=self._log_extra("task_stuck_unrecorded", db_task),
+            )
+        # Whether the write landed and whether the thread is stuck are
+        # different questions. A lost write can mean the thread's own
+        # outcome landed first, so it did come back; it can equally mean a
+        # reaper requeued the row underneath us while the thread runs on.
+        # Only the thread knows whether it is still inside this attempt, so
+        # ask it; the answer does not depend on any database write.
+        #
+        # Written under the lock `_stuck_alive` iterates it under. The drain
+        # is what holds the process open while a stuck attempt is still
+        # running, so its iteration must never see this dict change size.
+        with self._in_flight_lock:
+            still_running = self._running_on.get(watch.ident) == watch.attempt
+            if still_running:
+                self._stuck[watch.ident] = watch.attempt
+        if still_running:
             self._recycle(db_task)
 
     def _recycle(self, db_task: OxTask) -> None:
@@ -1329,14 +1636,34 @@ class Worker:
     def recycling(self) -> bool:
         """
         True once the backstop has given up on a thread. run() then drains
-        and returns, and the process should exit with RECYCLE_EXIT_CODE
-        via os._exit, because the stuck thread would block a normal exit.
+        and returns, and the process must exit with RECYCLE_EXIT_CODE via
+        os._exit, because the stuck thread is not a daemon and would block a
+        normal exit at interpreter shutdown, which is the exact wait the
+        recycle exists to end.
+
+        `manage.py ox_worker` does that, and the supervisor reads the code and
+        replaces the child. Anyone embedding Worker.run() has to do it too:
+        returning from run() is not the end of it, and a caller who simply
+        falls out of main() hangs on the thread that was abandoned.
         """
         return self._recycling
 
     def _stuck_alive(self) -> int:
-        alive = {thread.ident for thread in threading.enumerate()}
-        return sum(1 for ident in self._stuck if ident in alive)
+        """
+        How many pool threads are still inside an attempt we gave up on.
+
+        Counted by the attempt, not by the thread being alive. A pool thread
+        is reused, so its ident is still alive and idle after a stuck task
+        finally returns, and alive again under the next task. Counting idents
+        therefore over-counts, and the drain would stop waiting for healthy
+        work and let the process exit out from under it.
+        """
+        with self._in_flight_lock:
+            return sum(
+                1
+                for ident, attempt in self._stuck.items()
+                if self._running_on.get(ident) == attempt
+            )
 
     def _handle_failure(
         self,
@@ -1368,7 +1695,7 @@ class Worker:
                 "exception_class_path": (
                     f"{exception_type.__module__}.{exception_type.__qualname__}"
                 ),
-                "traceback": "".join(format_exception(exc)),
+                "traceback": _stored_traceback(exc),
             },
         ]
 
@@ -1382,6 +1709,7 @@ class Worker:
                 finished_at=timezone.now(),
                 locked_by=None,
                 locked_at=None,
+                lease_expires_at=None,
                 **handover,
             ):
                 return False
@@ -1392,7 +1720,9 @@ class Worker:
                 # the failure, but no result object can be built to signal.
                 task_result = None
             if task_result is not None:
-                task_finished.send(sender=type(self.backend), task_result=task_result)
+                task_finished.send_robust(
+                    sender=type(self.backend), task_result=task_result
+                )
             logger.error(
                 "Task id=%s path=%s failed after %d/%d attempts (%s)",
                 db_task.id,
@@ -1408,10 +1738,16 @@ class Worker:
                 ),
             )
         else:
-            delay = min(
-                self.backoff_initial * (2 ** (db_task.attempts - 1)),
-                self.backoff_max,
-            )
+            # The exponent is capped before the multiplication, not after.
+            # `attempts` is a PositiveSmallIntegerField and can reach 32767,
+            # and 2 ** 32766 overflows on the way to a float the min() would
+            # have discarded. This runs on the failure path, where raising
+            # would leave the row RUNNING for the reaper.
+            #
+            # Capping at 64 doublings is far past any backoff_max anyone
+            # configures and keeps the arithmetic in range.
+            doublings = min(max(db_task.attempts - 1, 0), 64)
+            delay = min(self.backoff_initial * (2**doublings), self.backoff_max)
             if not self._write_outcome(
                 db_task,
                 status=OxTask.Status.READY,
@@ -1420,6 +1756,7 @@ class Worker:
                 run_after=timezone.now() + timedelta(seconds=delay),
                 locked_by=None,
                 locked_at=None,
+                lease_expires_at=None,
                 **handover,
             ):
                 return False
@@ -1468,19 +1805,157 @@ class Worker:
         may yet report its own.
         """
         cutoff = _lease_now() - timedelta(seconds=self.lock_timeout)
-        reclaimed = 0
-        stuck = OxTask.objects.filter(
-            status=OxTask.Status.RUNNING, locked_at__lt=cutoff
+        # The row's own expiry decides, and this worker's timeout only decides
+        # for a row that has none. Deriving the deadline here instead means
+        # every reaper answers with its own configuration, so a rolling deploy
+        # that changes LOCK_TIMEOUT puts two answers in one fleet and the
+        # shorter one reclaims live work from a worker renewing correctly on
+        # the longer.
+        #
+        # NULL is a lease taken before the column existed. Those keep the old
+        # comparison until their first renewal fills the column in, which is
+        # what lets a fleet upgrade one worker at a time with nothing to run.
+        stuck = OxTask.objects.using(self._db_alias).filter(
+            Q(lease_expires_at__lt=_lease_now())
+            | Q(lease_expires_at__isnull=True, locked_at__lt=cutoff),
+            status=OxTask.Status.RUNNING,
         )
-        for db_task in stuck:
-            exhausted = db_task.attempts >= db_task.max_attempts
-            updates: dict[str, Any] = {
-                "locked_by": None,
-                "locked_at": None,
-            }
-            if exhausted:
-                updates.update(
+        return self._requeue_abandoned(stuck) + self._abandon_exhausted(stuck, cutoff)
+
+    def _requeue_abandoned(self, stuck: QuerySet[OxTask]) -> int:
+        """
+        Put abandoned rows that still have attempts back on the queue.
+
+        One UPDATE per pass, whatever the number of rows, and it carries the
+        full lease predicate rather than trusting the read that chose them: a
+        lease renewed in between no longer matches, so the row stays with the
+        worker that renewed it.
+
+        The cost is the reason. Every worker reaps on its own interval, so a
+        fleet that has just lost half its members runs this on every survivor
+        at once, against a database still recovering. A statement per row,
+        times the workers, is a second outage on top of the first.
+
+        Two bounds, and both of them matter:
+
+        - The pass takes at most `reap_batch` rows, so memory and log volume
+          are bounded whatever the size of the stuck set. The remainder goes
+          on the next pass.
+        - The UPDATE is restricted to the ids that were read. That is what
+          makes the record exact. `cutoff` is a database expression evaluated
+          per statement, so without the restriction the UPDATE's cutoff is
+          later than the SELECT's and rows can *enter* the set as well as
+          leave it. One entering and one leaving keeps the counts equal, and
+          the pass then names a task it did not reclaim, with its live holder
+          in `held_by`, in the one record an operator reads to explain a task
+          that ran twice.
+
+        Pinned to those ids the set can only shrink, so equal counts really do
+        mean the manifest describes the write. When it shrank, the pass
+        reports the count and names nobody.
+        """
+        requeue = stuck.filter(attempts__lt=F("max_attempts"))
+        manifest = list(
+            requeue.order_by("id").values_list(
+                "id", "task_path", "queue_name", "attempts", "locked_by"
+            )[: self.reap_batch]
+        )
+        if not manifest:
+            return 0
+        requeued = requeue.filter(pk__in=[row[0] for row in manifest]).update(
+            status=OxTask.Status.READY,
+            locked_by=None,
+            locked_at=None,
+            lease_expires_at=None,
+            lease_epoch=F("lease_epoch") + 1,
+        )
+        if not requeued:
+            return 0
+        if requeued == len(manifest):
+            for task_id, task_path, queue_name, attempts, held_by in manifest:
+                logger.warning(
+                    "Reclaimed stuck task id=%s path=%s (attempt %d) -> %s",
+                    task_id,
+                    task_path,
+                    attempts,
+                    OxTask.Status.READY,
+                    extra={
+                        "event": "task_reclaimed",
+                        "task_id": str(task_id),
+                        "task_path": task_path,
+                        "queue": queue_name,
+                        "attempt": attempts,
+                        "worker_id": self.worker_id,
+                        # The reaper's own id answers "who noticed". The
+                        # question an operator is actually asking of this
+                        # record is "who stopped", and only the row knows.
+                        "held_by": held_by,
+                        "status": str(OxTask.Status.READY),
+                    },
+                )
+        else:
+            logger.warning(
+                "Reclaimed %d stuck task(s) -> %s; leases were renewed during "
+                "the pass, so this record names none of them",
+                requeued,
+                OxTask.Status.READY,
+                extra={
+                    "event": "task_reclaimed",
+                    "worker_id": self.worker_id,
+                    "status": str(OxTask.Status.READY),
+                    "count": requeued,
+                },
+            )
+        return requeued
+
+    def _abandon_exhausted(
+        self, stuck: QuerySet[OxTask], cutoff: datetime | CombinedExpression
+    ) -> int:
+        """
+        Mark abandoned rows whose attempts are spent LOST.
+
+        This branch writes something specific to each row, the holder that
+        went quiet appended to that row's own error list, so it cannot
+        collapse into a single statement the way the requeue does. It is
+        bounded instead: `reap_batch` rows per pass, the rest on the next
+        one. Exhausting every attempt is the exception, and a bounded walk
+        keeps a reaper's cost independent of how many workers died at once.
+
+        Reading first means the write has to re-ask what the read assumed.
+        Two predicates, two races: the epoch catches a handover, and the
+        expiry catches a renewal, which the epoch cannot see because
+        renewing writes locked_at and lease_expires_at and nothing else.
+        """
+        lost = 0
+        candidates = (
+            stuck.filter(attempts__gte=F("max_attempts"))
+            .only(
+                "id",
+                "task_path",
+                "queue_name",
+                "attempts",
+                "max_attempts",
+                "locked_by",
+                "errors",
+                "lease_epoch",
+            )
+            .order_by("id")[: self.reap_batch]
+        )
+        for db_task in candidates:
+            changed = (
+                OxTask.objects.using(self._db_alias)
+                .filter(
+                    Q(lease_expires_at__lt=_lease_now())
+                    | Q(lease_expires_at__isnull=True, locked_at__lt=cutoff),
+                    pk=db_task.pk,
+                    status=OxTask.Status.RUNNING,
+                    lease_epoch=db_task.lease_epoch,
+                )
+                .update(
                     status=OxTask.Status.LOST,
+                    locked_by=None,
+                    locked_at=None,
+                    lease_expires_at=None,
                     # Process time, not the lease clock; _lease_now says why.
                     finished_at=timezone.now(),
                     errors=[
@@ -1492,9 +1967,9 @@ class Worker:
                             ),
                             "traceback": (
                                 f"Worker {db_task.locked_by!r} stopped renewing "
-                                f"its lease on this task; the claim aged past "
-                                f"{self.lock_timeout}s with no attempts "
-                                f"remaining. What the attempt did was never "
+                                f"its lease on this task; the lease expired "
+                                f"with no attempts remaining. What the "
+                                f"attempt did was never "
                                 f"observed: it may have succeeded, it may have "
                                 f"failed, it may not have got that far. This "
                                 f"record is the lost lease, not a cause."
@@ -1502,43 +1977,54 @@ class Worker:
                         },
                     ],
                 )
-            else:
-                updates.update(
-                    status=OxTask.Status.READY,
-                    lease_epoch=db_task.lease_epoch + 1,
-                )
-            # CAS on the lease epoch so a worker that finished (or another
-            # reaper) in the meantime is not overwritten. The epoch replaces
-            # the old compare on locked_at, which depended on a timestamp
-            # surviving a round trip unchanged.
-            changed = OxTask.objects.filter(
-                pk=db_task.pk,
-                status=OxTask.Status.RUNNING,
-                lease_epoch=db_task.lease_epoch,
-            ).update(**updates)
+            )
             if changed:
-                reclaimed += 1
+                lost += 1
                 logger.warning(
                     "Reclaimed stuck task id=%s path=%s (attempt %d/%d) -> %s",
                     db_task.id,
                     db_task.task_path,
                     db_task.attempts,
                     db_task.max_attempts,
-                    updates["status"],
+                    OxTask.Status.LOST,
                     extra=self._log_extra(
-                        "task_reclaimed", db_task, status=str(updates["status"])
+                        "task_reclaimed",
+                        db_task,
+                        status=str(OxTask.Status.LOST),
+                        held_by=db_task.locked_by,
                     ),
                 )
-        return reclaimed
+        return lost
 
     # -- scheduling --------------------------------------------------------
 
-    def _latest_ticks(self) -> dict[str, datetime]:
-        """Latest recorded tick per schedule name, for this worker's schedules."""
+    def _latest_ticks(self, since: datetime) -> dict[str, datetime]:
+        """
+        Latest recorded tick per schedule, counting only ticks at or after
+        `since`.
+
+        The bound is what keeps this cheap. Asked for the newest tick per
+        schedule over all of history, no database can seek to it: PostgreSQL
+        reads the whole tick table and hash-aggregates it, MySQL scans the
+        unique index end to end. That is a cost proportional to everything
+        ever dispatched, paid on every pass by every worker, and `ox_prune`
+        is the only thing holding it down.
+
+        `since` is the oldest tick any of this worker's schedules is
+        currently asking about, so the answer this method exists to give is
+        complete within it, and (schedule_name, scheduled_for) turns into a
+        range the index can seek. A schedule whose newest tick predates the
+        bound is absent from the result, which reads as "nothing recorded for
+        the tick in question", which is exactly what the caller does with it, and
+        the caller distinguishes that from a schedule with no ticks at all by
+        asking.
+        """
         return {
             row["schedule_name"]: row["latest"]
-            for row in OxScheduleTick.objects.filter(
-                schedule_name__in=[schedule.name for schedule in self.schedules]
+            for row in OxScheduleTick.objects.using(self._db_alias)
+            .filter(
+                schedule_name__in=[schedule.name for schedule in self.schedules],
+                scheduled_for__gte=since,
             )
             .values("schedule_name")
             .annotate(latest=Max("scheduled_for"))
@@ -1564,33 +2050,86 @@ class Worker:
         local_now = (
             timezone.localtime(now).replace(tzinfo=None) if settings.USE_TZ else now
         )
-        latest = self._latest_ticks()
-        dispatched = 0
+        # Every schedule's due tick first, so the tick log is read once and
+        # only as far back as the oldest of them.
+        due: dict[str, datetime] = {}
         for schedule in self.schedules:
             tick = schedule.cron.previous(local_now)
-            scheduled_for = timezone.make_aware(tick) if settings.USE_TZ else tick
+            due[schedule.name] = timezone.make_aware(tick) if settings.USE_TZ else tick
+        latest = self._latest_ticks(min(due.values()))
+        dispatched = 0
+        for schedule in self.schedules:
+            scheduled_for = due[schedule.name]
             last = latest.get(schedule.name)
-            # A tick recorded in the future (a clock-skewed worker's write)
-            # must not suppress ticks that are due now; the unique
-            # constraint still protects that future instant when it comes.
-            if last is not None and scheduled_for <= last and last <= now:
-                continue
+            if last is not None and scheduled_for <= last:
+                if last <= now:
+                    continue
+                # The newest tick in the log is in the future, which a
+                # clock-skewed worker's write can leave behind. That must not
+                # suppress ticks which are due now, so the comparison against
+                # the newest one cannot decide this. Ask about this instant
+                # instead: if it has already been recorded, it has run.
+                #
+                # One extra query, and only while a future tick is the newest
+                # one. In ordinary operation the comparison above answers.
+                if (
+                    OxScheduleTick.objects.using(self._db_alias)
+                    .filter(schedule_name=schedule.name, scheduled_for=scheduled_for)
+                    .exists()
+                ):
+                    continue
             try:
                 with transaction.atomic(using=self._db_alias):
                     result = None
-                    if last is not None:
+                    # The tick row goes in first, before anything is
+                    # enqueued. Every worker derives the same tick times, so
+                    # on every tick all of them reach this line and exactly
+                    # one INSERT survives the unique constraint. Claiming the
+                    # instant before doing the work means the losers do no
+                    # work: they raise here and enqueue nothing.
+                    #
+                    # enqueue() saves and fires task_enqueued before any outer
+                    # rollback could unwind it, which is why the constraint
+                    # has to decide before the enqueue and not after.
+                    tick_row = OxScheduleTick.objects.using(self._db_alias).create(
+                        schedule_name=schedule.name,
+                        scheduled_for=scheduled_for,
+                        task_id=None,
+                        created_at=now,
+                    )
+                    # Whether this is the first sighting is decided here,
+                    # from the log, rather than from the snapshot taken
+                    # before the loop. Another worker can commit this
+                    # schedule's anchor in between, and then this pass is
+                    # not the first sighting at all: anchoring again writes
+                    # a second no-task row, this time over a tick that had a
+                    # boundary and should have fired. The constraint then
+                    # holds that instant for good, and the run it was for
+                    # never happens.
+                    #
+                    # The row inserted above is excluded: it is this pass's
+                    # own tick, visible inside this transaction, and counting
+                    # it would make every schedule look like it already had
+                    # history.
+                    #
+                    # One extra query, and only while a schedule has no
+                    # ticks at all. Once it has one, `last` is set and this
+                    # never runs again.
+                    first_sighting = last is None and not (
+                        OxScheduleTick.objects.using(self._db_alias)
+                        .filter(schedule_name=schedule.name)
+                        .exclude(pk=tick_row.pk)
+                        .exists()
+                    )
+                    if not first_sighting:
                         result = schedule.task.enqueue(
                             *schedule.args, **schedule.kwargs
                         )
-                    OxScheduleTick.objects.create(
-                        schedule_name=schedule.name,
-                        scheduled_for=scheduled_for,
-                        task_id=result.id if result is not None else None,
-                        created_at=now,
-                    )
+                        tick_row.task_id = result.id
+                        tick_row.save(using=self._db_alias, update_fields=["task"])
             except IntegrityError:
-                # Another worker inserted this tick between our read and
-                # INSERT; its transaction won and ours rolled back whole.
+                # Another worker claimed this tick first; its INSERT won and
+                # ours rolled back before it enqueued anything.
                 continue
             if result is not None:
                 dispatched += 1
@@ -1611,11 +2150,30 @@ class Worker:
     # -- lifecycle ---------------------------------------------------------
 
     def run_once(self) -> bool:
-        """Claim and execute a single task inline. Returns True if one ran."""
+        """
+        Claim and execute a single task inline. Returns True if one ran.
+
+        Renewed for the duration, the same as a task on the pool: a renewal
+        thread is started for this call and stopped before it returns, so a
+        task that outlives LOCK_TIMEOUT keeps its lease here as it would on
+        the pool.
+        """
         db_task = self.claim_one()
         if db_task is None:
             return False
-        self.execute(db_task)
+        stop = Event()
+        renewer = Thread(
+            target=self._renewal_loop,
+            args=(stop,),
+            name="ox-renew-inline",
+            daemon=True,
+        )
+        renewer.start()
+        try:
+            self.execute(db_task, inline=True)
+        finally:
+            stop.set()
+            renewer.join(timeout=self.renew_interval + 5)
         return True
 
     def request_stop(self) -> None:
@@ -1703,23 +2261,60 @@ class Worker:
                     )
                     self.request_stop()
                     break
-                if time.monotonic() - last_reap >= self.reap_interval:
-                    self.reap()
-                    last_reap = time.monotonic()
-                if (
-                    self.schedules
-                    and time.monotonic() - last_dispatch >= self.schedule_interval
-                ):
-                    self.dispatch_schedules()
-                    last_dispatch = time.monotonic()
-                in_flight = {f for f in in_flight if not f.done()}
-                claimed_any = False
-                while len(in_flight) < self.concurrency and not self._stop.is_set():
-                    db_task = self.claim_one()
-                    if db_task is None:
-                        break
-                    claimed_any = True
-                    in_flight.add(executor.submit(self._execute_in_thread, db_task))
+                try:
+                    if time.monotonic() - last_reap >= self.reap_interval:
+                        self.reap()
+                        last_reap = time.monotonic()
+                    if (
+                        self.schedules
+                        and time.monotonic() - last_dispatch >= self.schedule_interval
+                    ):
+                        self.dispatch_schedules()
+                        last_dispatch = time.monotonic()
+                    in_flight = {f for f in in_flight if not f.done()}
+                    claimed_any = False
+                    while len(in_flight) < self.concurrency and not self._stop.is_set():
+                        db_task = self.claim_one()
+                        if db_task is None:
+                            break
+                        claimed_any = True
+                        in_flight.add(executor.submit(self._execute_in_thread, db_task))
+                except Error:
+                    # django.db.Error rather than DatabaseError: InterfaceError
+                    # sits beside DatabaseError under Error, and a connection
+                    # dropped underneath the worker is the likeliest failure
+                    # here.
+                    #
+                    # The envelope this package publishes says the database may
+                    # go away and come back, and every loop here honours it:
+                    # the renewal thread rides it out, an attempt rides it
+                    # out, and so does this one. Letting the error out of
+                    # run() would hand the supervisor a death per blip, and
+                    # five in a minute stop it for good.
+                    #
+                    # Reap, dispatch and claim are all retried on the next pass
+                    # by construction: nothing here holds state that a missed
+                    # pass loses. Dropping the connection is what makes the
+                    # next pass reconnect rather than reuse a broken one.
+                    logger.warning(
+                        "Worker %s could not reach the database this pass; "
+                        "retrying in %.1fs",
+                        self.worker_id,
+                        self.poll_interval,
+                        exc_info=True,
+                        extra={
+                            "event": "worker_poll_failed",
+                            "worker_id": self.worker_id,
+                        },
+                    )
+                    # close_old_connections rather than close_all: it drops
+                    # exactly the connections Django knows are unusable or past
+                    # their age, which is what makes the next pass reconnect,
+                    # and it is what the attempt path already does. close_all
+                    # would also tear down a connection the caller owns.
+                    close_old_connections()
+                    self._stop.wait(self.poll_interval)
+                    continue
                 if not claimed_any:
                     if in_flight:
                         # A slot may free up long before the poll interval
@@ -1745,7 +2340,7 @@ class Worker:
                         "pending": pending,
                     },
                 )
-            self._drain(in_flight)
+            self._drain(in_flight, renew_stop)
             renew_stop.set()
             renewer.join(timeout=self.renew_interval + 5)
             if self._recycling:
@@ -1768,19 +2363,73 @@ class Worker:
                 extra={"event": "worker_stopped", "worker_id": self.worker_id},
             )
 
-    def _drain(self, in_flight: set[Future[None]]) -> None:
+    def _drain(
+        self, in_flight: set[Future[None]], renew_stop: Event | None = None
+    ) -> None:
         """
         Wait for the in-flight tasks, except the stuck ones while recycling:
         a thread the backstop gave up on may never finish, and the point of
         the recycle is to stop waiting for it.
+
+        While recycling, the wait is also bounded. Abandoning the stuck thread
+        is not enough on its own: the worker still waits for its healthy
+        siblings, and a sibling on a queue with no timeout has no obligation
+        to finish. The bound is what makes the recycle certain, on a process
+        that has already decided it cannot be trusted to run work.
+
+        The budget defaults to `lock_timeout`, which is a generous allowance
+        rather than a free one, and the arithmetic adds rather than
+        overlaps. These leases are still being renewed
+        while the drain waits, so no reaper is entitled to the rows during the
+        budget: the wait and the lease do not overlap, they add. Worst case
+        from the backstop firing to another worker picking the row up is
+        `recycle_drain_budget + lock_timeout`, which is ten minutes at the
+        defaults.
+
+        Renewal is stopped here, at the moment the budget expires, rather than
+        left to the process exit, so the lease clock starts from a point this
+        method controls and an embedded caller behaves like the management
+        command.
+
+        The cost is real and deliberate: a task cut short this way is recorded
+        as a lost lease and retried, and one on its last attempt becomes LOST
+        instead of the success it was heading for. That is the price of a
+        recycle that is certain.
         """
-        if not self._recycling:
-            wait(in_flight)
-            return
+        give_up_at: float | None = None
         while True:
             pending = {future for future in in_flight if not future.done()}
-            if len(pending) <= self._stuck_alive():
+            if not pending:
                 return
+            # Re-read the flag every pass: the backstop can fire part way
+            # through an ordinary drain.
+            if self._recycling:
+                healthy = len(pending) - self._stuck_alive()
+                if healthy <= 0:
+                    return
+                now = time.monotonic()
+                if give_up_at is None:
+                    give_up_at = now + self.recycle_drain_budget
+                elif now >= give_up_at:
+                    # Stop refreshing the leases before abandoning the rows,
+                    # so they begin ageing out now rather than whenever this
+                    # process happens to exit.
+                    if renew_stop is not None:
+                        renew_stop.set()
+                    logger.warning(
+                        "Worker %s stopped waiting on %d in-flight task(s) "
+                        "after %gs of recycling; their leases will expire and "
+                        "the reaper will requeue them",
+                        self.worker_id,
+                        healthy,
+                        self.recycle_drain_budget,
+                        extra={
+                            "event": "worker_drain_abandoned",
+                            "worker_id": self.worker_id,
+                            "pending": healthy,
+                        },
+                    )
+                    return
             wait(pending, timeout=RECYCLE_DRAIN_POLL, return_when=FIRST_COMPLETED)
 
 

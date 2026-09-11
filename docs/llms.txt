@@ -7,7 +7,7 @@
 > schedules, a result store and a health command. No broker to provision.
 > BSD 3-Clause. Package name on PyPI: django-ox. App label: django_ox.
 
-Operational facts worth getting right:
+Operational facts to get right:
 
 - Requires Python 3.12 or later and Django 5.2 or later. Django ships the
   Tasks API but no production backend; django-ox is the backend.
@@ -127,8 +127,8 @@ Operational facts worth getting right:
   `django.tasks.backends.dummy.DummyBackend` on Django 6.0+; on Django 5.2 LTS
   the same paths under `django_tasks.backends.`.
 - Batches, unique (deduplicated) tasks and rate limiting are in Oxpull Pro,
-  a paid add-on delivered from a private package
-  index when it opens. They are not in django-ox. `django_ox.stats` and
+  a paid add-on; pricing and how to get it are at <https://oxpull.com/>. They
+  are not in django-ox. `django_ox.stats` and
   `ox_health` are in the free package.
 
 ## Documentation

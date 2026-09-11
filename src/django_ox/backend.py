@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from django.apps import apps
 from django.core import checks
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.db import transaction
+from django.db import router, transaction
 from django.utils import timezone
 
 from .compat import (
@@ -31,11 +31,18 @@ class OxBackend(BaseTaskBackend):
     """
     Database-backed task backend.
 
-    enqueue() is a plain INSERT on the default database connection, so it
-    participates in the caller's open transaction: a task enqueued inside
-    transaction.atomic() becomes visible to workers only if the transaction
-    commits, and is discarded on rollback. This is the durability guarantee;
-    transaction.on_commit() is not needed with this backend.
+    enqueue() is a plain INSERT on the connection OxTask routes to, so it
+    participates in a caller's transaction on that same connection: a task
+    enqueued inside transaction.atomic() becomes visible to workers only if
+    the transaction commits, and is discarded on rollback. This is the
+    durability guarantee; transaction.on_commit() is not needed with this
+    backend.
+
+    On the default single-database setup that connection is the default one,
+    which is the case the guarantee is usually described in. Under a router
+    that sends OxTask elsewhere it is that database, and a caller whose own
+    rows are written on a different connection gets two transactions rather
+    than one.
     """
 
     supports_defer = True
@@ -85,7 +92,17 @@ class OxBackend(BaseTaskBackend):
         from .results import task_result_from_db
 
         task_result = cast("TaskResult[P, R]", task_result_from_db(db_task, task=task))
-        task_enqueued.send(type(self), task_result=task_result)
+        # send_robust, for the same reason as the worker's lifecycle signals
+        # and one of its own: the row is already saved when this fires, so a
+        # receiver has no enqueue left to veto. Letting its exception out of
+        # enqueue() would report a failure over a task that exists, and a
+        # caller who retries on that creates a second one. Receiver exceptions
+        # are logged on the django.dispatch logger, not this package's.
+        #
+        # Inside an outer transaction.atomic() the row is committed with that
+        # block rather than before this line; the reasoning holds either way,
+        # because the caller's own rollback is what undoes the task.
+        task_enqueued.send_robust(type(self), task_result=task_result)
         return task_result
 
     def enqueue_many[**P, R](
@@ -110,15 +127,20 @@ class OxBackend(BaseTaskBackend):
         enqueued_at = timezone.now()
         rows = [self._row(task, args, kwargs, enqueued_at) for args, kwargs in calls]
 
-        with transaction.atomic():
-            OxTask.objects.bulk_create(rows, batch_size=INSERT_CHUNK_SIZE)
+        # Pinned to the alias the rows are written through, so the block and
+        # the INSERTs share one connection. An unpinned atomic() opens on the
+        # default connection while bulk_create routes itself, which under a
+        # router guards a connection the INSERTs never touch.
+        alias = router.db_for_write(OxTask)
+        with transaction.atomic(using=alias):
+            OxTask.objects.using(alias).bulk_create(rows, batch_size=INSERT_CHUNK_SIZE)
 
         results = [
             cast("TaskResult[P, R]", task_result_from_db(row, task=task))
             for row in rows
         ]
         for task_result in results:
-            task_enqueued.send(type(self), task_result=task_result)
+            task_enqueued.send_robust(type(self), task_result=task_result)
         return results
 
     def get_result(self, result_id: str) -> TaskResult[..., Any]:
@@ -153,7 +175,19 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E002",
                 )
             )
-        from .timeouts import task_timeout_problems
+        from .timeouts import lease_timing_problems, task_timeout_problems
+
+        for problem in lease_timing_problems(self.options):
+            errors.append(
+                checks.Error(
+                    problem,
+                    hint=(
+                        "LOCK_TIMEOUT, BACKOFF_INITIAL and BACKOFF_MAX are each "
+                        "a positive, finite number of seconds."
+                    ),
+                    id="django_ox.E010",
+                )
+            )
 
         for problem in task_timeout_problems(self.options, self.queues):
             unknown_queue = "is not in QUEUES" in problem

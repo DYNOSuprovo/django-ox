@@ -22,8 +22,7 @@ Comparing backends? See [Choosing a task backend](https://oxpull.com/django-ox/c
 
 Requires Python 3.12+ and Django 5.2+. Django 6.0 and later ship the Tasks
 framework in core. On Django 5.2 LTS it comes from the `django-tasks`
-backport, so install the `backport` extra there. **Your own imports differ
-with it**: on Django 6.0+ you write `from django.tasks import task`, and on
+backport, so install the `backport` extra there. **Your import path depends on the Django version**: on Django 6.0+ you write `from django.tasks import task`, and on
 Django 5.2 you write `from django_tasks import task`. django-ox itself
 handles both.
 
@@ -70,7 +69,7 @@ the queue is a table.
 
 ## Transactional enqueue
 
-`enqueue()` is a single INSERT on your default database connection, so it
+`enqueue()` is a single INSERT on the connection the task table uses, so it
 participates in the caller's open transaction. A task enqueued inside
 `transaction.atomic()` becomes visible to workers only when the transaction
 commits, and disappears on rollback. There is no window where business data
@@ -84,43 +83,38 @@ limit, keeping the full traceback of every attempt.
 
 ## Measured under worker kills
 
-A soak and chaos harness ran 0.3.1 for 21.5 minutes of sustained mixed load
-on PostgreSQL 16: 37,804 tasks, nine minutes of which SIGKILLed a random
-worker every 20 to 45 seconds. Eighteen kills, thirty interrupted
-executions. Every task reached a terminal state, every interrupted
-execution was re-executed inside the documented reclaim bound, and the
-median first-attempt latency under kills stayed within a millisecond of the
+A soak and chaos harness ran django-ox 1.1.0 for 21.5 minutes of sustained
+mixed load on PostgreSQL 16, 37,804 tasks in all. For nine of those minutes a
+random worker was SIGKILLed every 20 to 45 seconds: 18 kills over the run,
+27 interrupted executions. Every task reached a terminal state, every interrupted execution
+was re-executed inside the reclaim bound, no task executed twice in this
+run, and the median latency under kills stayed within two milliseconds of the
 undisturbed baseline.
 
 Execution is at-least-once, so a worker killed between finishing a task and
-recording the outcome leaves that task to run again. One task in that run
-executed twice for exactly that reason, and no task executed twice without
-a kill to account for it.
+recording the outcome leaves that task to run again. The harness asserts
+that a second execution is only ever attributable to a kill, and it held.
 
-The soak ran 0.3.1, and the outcome-write path changed after both it and the
-throughput run below. Neither measurement covers the shipped worker exactly;
-the benchmarks page says which way the difference runs.
-
-Thirty-seven assertions ran and all thirty-seven passed. The harness
-design, every assertion and the caveats are in
-[SOAK-2026-09-01.md](https://github.com/oxpull/django-ox/blob/main/benchmarks/SOAK-2026-09-01.md),
+Forty assertions ran and all forty passed. The harness design, every
+assertion and the caveats are in
+[SOAK-2026-09-11.md](https://github.com/oxpull/django-ox/blob/main/benchmarks/SOAK-2026-09-11.md),
 written from
-[the raw data](https://github.com/oxpull/django-ox/blob/main/benchmarks/soak-results-raw-2026-09-01.json).
+[the raw data](https://github.com/oxpull/django-ox/blob/main/benchmarks/soak-results-raw-2026-09-11.json).
+The soak and the comparison below both ran on 1.1.0 on 2026-09-11.
 
 ## Measured against the alternative
 
 Against `django-tasks-db` on PostgreSQL 16, 2,000 no-op tasks, one worker,
-five runs per arm on one machine: django-ox completed the batch at 114.9
-tasks per second against 103.6. Every one of the five django-ox runs beat
-every one of the five control runs; the slowest was 112.6 and their fastest
-was 105.0. In-transaction enqueue latency was a tie at about six tenths of
-a millisecond at p50.
+five runs per arm on one machine: django-ox 1.1.0 completed the batch at about 125 tasks per second against
+108. Every one of the five django-ox runs beat every one of
+the five control runs; the slowest django-ox run was 121.3 and the fastest
+control run was 110.1. In-transaction enqueue latency was a tie, about six
+tenths of a millisecond at p50 and the same story at p95, and on enqueue
+throughput django-ox led on the mean.
 
-At concurrency 4 the result reverses and django-tasks-db is ahead: 346.3
-against 328.5 on the mean, about 5 percent, and wider on the median.
-[The benchmarks page](https://oxpull.com/django-ox/benchmarks/) carries that
-result, the reason the two harnesses are not measuring the same shape at that
-width, and the raw data behind every figure.
+[The benchmarks page](https://oxpull.com/django-ox/benchmarks/) has the
+full matrix, including the concurrency-4 row and the two worker shapes it
+compares, and the raw data behind every figure.
 
 ## Configuration
 
@@ -132,7 +126,7 @@ TASKS = {
         "BACKEND": "django_ox.backend.OxBackend",
         "QUEUES": ["default", "emails"],  # [] allows any queue name
         "OPTIONS": {
-            "MAX_ATTEMPTS": 3,  # executions per task before FAILED
+            "MAX_ATTEMPTS": 3,  # claims per task before FAILED
             "LOCK_TIMEOUT": 300,  # seconds before a dead worker's task is reclaimed
             "BACKOFF_INITIAL": 5,  # first retry delay, seconds; doubles per attempt
             "BACKOFF_MAX": 600,  # retry delay ceiling, seconds
@@ -302,7 +296,10 @@ firing for a time before it existed.
 - Retry state is visible in the database: attempts, per-attempt tracebacks,
   and the next scheduled run (`run_after`).
 - Because execution is at-least-once, tasks should be idempotent. A task is
-  retried both when it raises and when its worker dies mid-run.
+  retried both when it raises and when its worker dies mid-run. The lease
+  number stops two workers writing the same row; it does not stop two threads
+  running the same task body, which is a property of every at-least-once
+  queue. [What the lease guarantees, precisely](https://oxpull.com/django-ox/production/#what-the-lease-guarantees-precisely).
 - Concurrency uses a thread pool. That fits I/O-bound tasks (email, HTTP,
   ORM); for CPU-bound work, run `--processes N --concurrency 1`, which is N
   worker processes under one supervisor.
@@ -316,8 +313,7 @@ bounded with `TASK_TIMEOUT`), and multi-database routing (tasks are stored on
 the default database for the model).
 
 Batches, unique tasks and rate limiting are in
-[Oxpull Pro](https://oxpull.com/django-ox/pro/), a paid add-on. See
-<https://oxpull.com/> for its status and pricing. Metrics stay in this
+[Oxpull Pro](https://oxpull.com/django-ox/pro/), a paid add-on. Pricing and how to get it are at <https://oxpull.com/>. Metrics stay in this
 package: `django_ox.stats` and `ox_health` are free and stay free.
 
 ## Stability

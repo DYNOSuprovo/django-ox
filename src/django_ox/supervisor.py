@@ -51,7 +51,7 @@ BACKOFF_RESET = 60.0
 # container runtime) then applies its own restart policy with its own
 # backoff, which is where a persistent fault belongs. The count is per slot
 # so that every slot dying at once (a database restart) is one restart each,
-# not a trip; five deaths of one slot in a minute is a fault, not a blip.
+# not a trip; a sixth death of one slot in a minute is a fault, not a blip.
 RESTART_CAP = 5
 RESTART_WINDOW = 60.0
 
@@ -63,7 +63,20 @@ KILL_GRACE = 5.0
 # the restart delay and of the response to a stop request.
 POLL_INTERVAL = 0.1
 
-STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+# Built from the signals this platform has, rather than named outright. SIGHUP
+# does not exist on Windows and `ox_worker` imports this module
+# unconditionally, so a named constant would fail at import, before argparse
+# and before the command could explain anything. The limit belongs to
+# --processes, and the check that reports it lives in handle().
+STOP_SIGNALS = tuple(
+    getattr(signal, name)
+    for name in ("SIGTERM", "SIGINT", "SIGHUP")
+    if hasattr(signal, name)
+)
+
+# Same reason. Where there is no SIGKILL, SIGTERM is the strongest signal
+# available, so escalation repeats it.
+FORCE_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 def child_command(
@@ -201,8 +214,8 @@ class Supervisor:
         connection or claimed a task. Nothing was lost and nothing failed.
 
         Reporting it upwards would say otherwise. A stop that lands during
-        startup is ordinary -- a restart, a deploy that rolls twice, a
-        health check that never went green -- and a unit on
+        startup is ordinary (a restart, a deploy that rolls twice, a
+        health check that never went green), and a unit on
         ``Restart=on-failure`` would read the 143 as a fault and start the
         service again.
         """
@@ -324,7 +337,7 @@ class Supervisor:
                 self.kill_grace,
                 extra={"event": "supervisor_killed_workers", "worker_indexes": alive},
             )
-        self._signal_children(signal.SIGKILL)
+        self._signal_children(FORCE_SIGNAL)
 
     # -- signals -----------------------------------------------------------
 

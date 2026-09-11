@@ -26,8 +26,7 @@ own.
 ## Transactional enqueue
 
 The queue lives in your database, so enqueueing a task is a single INSERT
-on your default connection. That gives you a guarantee no broker-based
-queue can offer: **the task and your data commit or roll back together.**
+on your default connection. That gives you a guarantee a broker cannot offer: **the task and your data commit or roll back together.**
 
 ```python
 from django.db import transaction
@@ -64,7 +63,7 @@ If the worker is killed, the lease goes stale. After `LOCK_TIMEOUT` (default
 300 seconds) the reaper in any surviving worker takes the task back: to READY
 if attempts remain, or to LOST if they are spent. LOST reads as `FAILED`
 through the result API, so nothing waits forever on a worker that is not
-coming back. The mechanics, and the one case worth knowing about, are in
+coming back. The mechanics, and the one case to know about, are in
 [Production](production.md#the-lease).
 
 ## What you get
@@ -172,21 +171,21 @@ That is the whole integration. Next steps:
 
 The core is finite on purpose: a durable queue, a worker, recurring
 schedules, and monitoring, with nothing extra to operate. Design
-decisions worth knowing before you commit:
+decisions to know before you commit:
 
 - A queued task can be discarded before a worker claims it, and a failed
   one retried, from the admin or with `django_ox.actions`. `TASK_TIMEOUT`
   bounds how long any attempt may run; a particular running task cannot be
   interrupted on demand.
-- Tasks are stored on the default database for the model; multi-database
-  routing is not part of the current scope.
+- Every django-ox table lives on one database, the one your router sends
+`OxTask` to. A queue on a different database from the rows it refers to gives
+up the transactional enqueue.
 - Worker concurrency is a thread pool, which fits I/O-bound tasks. For
   CPU-bound work, run `--processes N --concurrency 1`, which is N worker
   processes under one supervisor. See
   [Production](production.md#threads-and-processes).
 
-Batches, unique tasks and rate limiting are in [Oxpull Pro](pro.md), a paid
-add-on that is not on sale yet; the waitlist is at <https://oxpull.com/>.
+Batches, unique tasks and rate limiting are in [Oxpull Pro](pro.md), a paid add-on. Pricing and how to get it are at <https://oxpull.com/>.
 Metrics stay in this package: `django_ox.stats` and `ox_health` are free and
 stay free.
 

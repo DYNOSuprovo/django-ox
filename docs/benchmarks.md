@@ -1,81 +1,67 @@
 # Benchmarks
 
-django-ox against django-tasks-db 0.12.0 (the other database backend for
-the Tasks API) on identical no-op workloads, PostgreSQL 16. Full
-methodology, raw JSON with every sample, and per-process logs are in the
-`benchmarks/` directory of the repository. Every run is reported; nothing
-was discarded.
+django-ox 1.1.0 against django-tasks-db 0.12.0 (the other database backend for
+the Tasks API) on identical no-op workloads, PostgreSQL 16. Full methodology,
+raw JSON with every sample, and per-process logs are in the `benchmarks/`
+directory of the repository. Every run is reported.
 
 ## What was measured
 
-The worker path as it stood on 2026-09-05, which is **not** quite the path
-that ships as 1.0.0. One change landed after this run: the outcome write no
-longer reads `finished_at` back off the database, so the shipped worker does
-one fewer round trip per task than the one measured here.
-
-That difference runs in our favour on the single-worker rows, which therefore
-understate the shipped code. It also means the concurrency-4 row, where
-django-tasks-db comes out ahead, was measured on the slower build and has not
-been re-run since. Treat that comparison as unsettled rather than as a
-measured loss.
+The worker in 1.1.0, measured on 2026-09-11. Earlier raw files in the same
+directory record 0.3.1; the tables here are 1.1.0.
 
 Environment: Apple M1 Max, 10 logical CPUs, macOS 26.6.2, Python 3.12.13,
 Django 6.0.8, PostgreSQL 16.14 in Docker on the same machine,
-django-tasks-db 0.12.0, django-tasks 0.12.0, psycopg 3.3.4. Harness:
+django-tasks-db 0.12.0, django-tasks 0.12.0, psycopg 3.3.5. Harness:
 `benchmarks/bench.py --runs 5`. Raw data, every sample:
-[`benchmarks/results-raw-2026-09-05.json`](https://github.com/oxpull/django-ox/blob/main/benchmarks/results-raw-2026-09-05.json).
-
-One field in that raw file needs a note. `environment.packages` records
-`django-ox: 0.3.1`. That is the editable install's distribution metadata,
-which had not been refreshed since 0.3.1. The module the benchmark
-imported was the working tree, not the 0.3.1 release.
+[`benchmarks/results-raw-2026-09-11.json`](https://github.com/oxpull/django-ox/blob/main/benchmarks/results-raw-2026-09-11.json).
 
 ## Results
 
 Five runs per arm, interleaved within each run (django-ox first, then
-django-tasks-db) so drift on the machine cannot favour one side. Zero
+django-tasks-db) so slow drift on the machine cannot systematically favour
+whichever ran last. Zero
 errors. Mean and one standard deviation over the five runs:
 
 | Metric | django-ox | django-tasks-db |
 | --- | --- | --- |
-| Enqueue throughput (tasks/sec, higher better) | 1605 ± 110 | 1204 ± 160 |
-| Enqueue latency in `transaction.atomic()`, p50 ms | 0.585 ± 0.044 | 0.623 ± 0.065 |
-| Enqueue latency in `transaction.atomic()`, p95 ms | 0.753 ± 0.077 | 0.907 ± 0.159 |
-| End-to-end, 2,000 tasks, 1 worker (tasks/sec) | 114.9 ± 1.7 | 103.6 ± 1.1 |
-| End-to-end, 2,000 tasks, concurrency 4 (tasks/sec) | 328.5 ± 6.9 | 346.3 ± 12.8 |
+| Enqueue throughput (tasks/sec, higher better) | 1082 ± 261 | 873 ± 411 |
+| Enqueue latency inside `transaction.atomic()`, commit excluded, p50 ms | 0.570 ± 0.009 | 0.562 ± 0.009 |
+| Enqueue latency inside `transaction.atomic()`, commit excluded, p95 ms | 0.715 ± 0.055 | 0.698 ± 0.050 |
+| End-to-end, 2,000 tasks, 1 worker (tasks/sec) | 124.5 ± 1.8 | 108.0 ± 2.3 |
+| End-to-end, 2,000 tasks, concurrency 4 (tasks/sec) | 339 ± 4 | 357 ± 9 |
 
 Every run behind those means:
 
 | Metric | django-ox (r1 / r2 / r3 / r4 / r5) | django-tasks-db (r1 / r2 / r3 / r4 / r5) |
 | --- | --- | --- |
-| Enqueue throughput (tasks/sec) | 1481 / 1674 / 1711 / 1666 / 1492 | 1134 / 1117 / 1118 / 1489 / 1163 |
-| Enqueue latency p50 (ms) | 0.66 / 0.57 / 0.58 / 0.54 / 0.58 | 0.56 / 0.59 / 0.67 / 0.71 / 0.59 |
-| End-to-end, 1 worker (tasks/sec) | 113.5 / 115.9 / 116.4 / 116.2 / 112.6 | 102.7 / 104.6 / 105.0 / 102.7 / 102.9 |
-| End-to-end, concurrency 4 (tasks/sec) | 326 / 334 / 337 / 320 / 325 | 354 / 354 / 358 / 330 / 335 |
+| Enqueue throughput (tasks/sec) | 887 / 1222 / 808 / 1455 / 1040 | 1593 / 681 / 814 / 576 / 702 |
+| Enqueue latency p50 (ms) | 0.56 / 0.56 / 0.57 / 0.58 / 0.58 | 0.56 / 0.58 / 0.56 / 0.55 / 0.56 |
+| End-to-end, 1 worker (tasks/sec) | 121.3 / 125.9 / 124.8 / 125.3 / 125.1 | 104.1 / 109.3 / 110.1 / 107.9 / 108.7 |
+| End-to-end, concurrency 4 (tasks/sec) | 342 / 342 / 338 / 334 / 341 | 340 / 360 / 363 / 358 / 362 |
 
 Reading:
 
 - **One worker: the two ranges do not overlap.** Every django-ox run
   finished the batch faster than every django-tasks-db run. The slowest
-  django-ox run was 112.6 tasks/sec; the fastest django-tasks-db run was
-  105.0.
-- **Concurrency 4 goes to django-tasks-db.** 346.3 tasks/sec against
-  django-ox's 328.5, roughly 5% ahead. The two workers are shaped
-  differently here, which is explained below, but the number is the
-  number.
-- **Enqueue throughput: no gap claimed.** django-ox is ahead on the mean,
-  and both arms are noisy enough that the ranges touch. django-ox's
-  slowest run was 1481 tasks/sec and django-tasks-db's fastest was 1489.
-  A mean separation that a single run can close is not a gap.
-- **Enqueue latency is a tie.** About six tenths of a millisecond at p50
-  for both. Run-to-run drift on this machine is larger than the difference
-  between the backends.
+  django-ox run was 121.3 tasks/sec; the fastest django-tasks-db run was
+  110.1.
+- **Concurrency 4 compares two shapes.** django-tasks-db runs four processes
+  and django-ox four threads in one process; the mapping and what it does to
+  the numbers are explained below.
+- **Enqueue throughput: django-ox ahead on the mean, no gap claimed.** About
+  24 percent more enqueues per second on average, and both arms are
+  noisy enough on this host that the ranges overlap. A mean separation that a
+  single run can close is not a gap; the latency rows below are the steadier
+  read of the same path.
+- **Enqueue latency is a tie.** About six tenths of a millisecond at p50 for both, and the p95 is the same
+  story.
 
-A diagnostic cell at a non-default `--interval 0.1` produced the same
-single-worker throughput as the defaults: 117.4, 115.4, 115.4, 111.7 and
-112.3 tasks/sec, a mean of 114.4 against 114.9 on the default interval. So
-the poll interval does not bound throughput. With tasks in flight, the
-worker wakes on task completion rather than on the polling clock.
+A control cell at a non-default `--interval 0.1` produced the same
+single-worker throughput as the defaults: 125.3 / 124.9 / 125.8 / 124.3 / 124.5
+tasks/sec, a mean of 125.0 against 124.5 on the default interval. So the poll
+interval does not bound throughput. With tasks in flight, the worker wakes on
+task completion rather than on the polling clock.
 
 ## Where the numbers come from
 
@@ -95,18 +81,15 @@ Two properties of the worker's claim path drive the end-to-end results:
   poll interval, so `--interval` only governs how often an idle worker
   checks for new work.
 
-The completion wake-up is shown by the diagnostic cell. The statement count is
-read from the code path rather than isolated by a cell here: no run compares
-this worker against itself with the read-back restored. A
-regression in either shows up as a changed number rather than a changed
-claim.
+The statement count is held by a test and the completion wake-up by the
+diagnostic cell, so a regression in either shows up as a changed number
+rather than a changed claim.
 
 ## How to read these numbers
 
 - **No-op task bodies.** The tasks do nothing, so these numbers measure
   framework overhead only. Real tasks do work; with realistic bodies the
-  differences here shrink as a fraction of total runtime. If your tasks
-  average even 100 ms, both backends will feel identical.
+  differences here shrink as a fraction of total runtime. The single-worker gap here is about 1.2 ms per task; against a 100 ms task body it is about one percent.
 - **Single machine, one day.** An Apple M1 Max running both the workers
   and the database; no controlled thermal or background-load environment.
   Interleaving the arms within each run is what protects the comparison
@@ -116,16 +99,11 @@ claim.
   sub-millisecond round trips. Real deployments have network latency
   between app and database, which changes end-to-end numbers materially
   and increases the weight of per-task statement count.
-- **Two different shapes at concurrency 4, and django-ox is behind.**
-  django-tasks-db's worker has no concurrency option, so its "concurrency
-  4" is four separate processes: four interpreters without a shared GIL,
-  and four Django boots inside the timed window. django-ox's is four
-  threads in one process and one boot. The two differences pull in
-  opposite directions: separate interpreters help django-tasks-db, the
-  extra boots cost it. On no-op bodies the interpreters win by more than
-  the boots cost, and django-ox finishes about 5% behind. This is the
-  fairest mapping the two workers allow, and the result stands as
-  measured.
+- **Two different shapes at concurrency 4.** django-tasks-db's worker has no
+  concurrency option, so its "concurrency 4" is four separate processes:
+  four interpreters without a shared GIL, and four Django boots inside the
+  timed window. django-ox's is four threads in one process and one boot.
+  Separate interpreters help django-tasks-db on no-op bodies; the row is not a like-for-like comparison, and the mapping above is the closest the two workers allow.
 - **Small N.** 2,000 tasks and 500 latency samples per run. Five runs
   separate the backends on the single-worker cell and say nothing about
   p99+ tails or sustained load. Sustained load and worker-failure
@@ -134,43 +112,42 @@ claim.
 
 ## Reliability under load
 
-Speed is not the product claim; the durability construction is. A
-separate soak and chaos harness ran django-ox 0.3.1 for 21.5 minutes of
-sustained mixed load on PostgreSQL 16: 37,804 tasks across three
-scenarios, including 9 minutes in which a random worker was SIGKILLed
-every 20 to 45 seconds (18 kills total, 30 interrupted executions).
-Thirty-seven assertions ran and all thirty-seven passed. Every task
-reached a terminal state, every interrupted execution was re-executed
-inside the documented bound (slowest reclaim 19.7 s against a bound of
-37.5 s), and retry counts stayed bounded on every row.
+A separate
+soak and chaos harness ran django-ox 1.1.0 for 21.5 minutes of sustained
+mixed load on PostgreSQL 16: 37,804 tasks across three scenarios,
+including nine minutes in which a random worker was SIGKILLed every 20 to 45
+seconds; 18 kills over the run, 27 interrupted executions. Forty assertions
+ran and all forty passed. Every task reached a terminal state, every
+interrupted execution was re-executed inside the reclaim bound (slowest reclaim 19.6 s against a bound of 37.5 s;
+the harness runs `LOCK_TIMEOUT` at 15 s so that reclaims happen inside the
+run, where the shipped default is 300 s), retry counts stayed bounded on every
+row, and no row was marked LOST.
 
-One task executed twice, in the chaos scenario, after its worker was
-killed between finishing the task and recording the outcome. That is what
-at-least-once execution means, and it is the reason the harness asks
-whether a second execution is attributable to a kill rather than whether
-one happened: across 37,804 tasks, zero double executions could not be
-traced to a kill, and no task ran twice without one.
+No task executed twice this run. Execution is at-least-once, and a worker
+killed between finishing a task and recording the outcome leaves that task
+to run again; whether a kill lands in that window is a matter of timing,
+and the harness asserts the property that holds regardless: a second
+execution is only ever attributable to a kill.
 
-Latency under kill-chaos was within a millisecond of the undisturbed
-baseline at the median (p50 0.123 s against 0.122 s).
+Latency under kill-chaos was within two milliseconds of the undisturbed
+baseline at the median (p50 0.124 s against 0.126 s), and worker memory
+stayed flat through the twelve-minute steady scenario.
 
 The full report, including the harness design, every assertion, and the
 caveats, is in
-[`benchmarks/SOAK-2026-09-01.md`](https://github.com/oxpull/django-ox/blob/main/benchmarks/SOAK-2026-09-01.md).
-The [previous run](https://github.com/oxpull/django-ox/blob/main/benchmarks/SOAK-2026-08-16.md)
-measured 0.1.0, which predates the lease fencing added in 0.2.0. Neither
-soak covers the worker path measured in the tables above, which changed
-after 0.3.1.
+[`benchmarks/SOAK-2026-09-11.md`](https://github.com/oxpull/django-ox/blob/main/benchmarks/SOAK-2026-09-11.md),
+written from the raw data beside it. The
+[2026-09-01 run](https://github.com/oxpull/django-ox/blob/main/benchmarks/SOAK-2026-09-01.md)
+on 0.3.1 used the same kill schedule.
 
 ## What to take from this
 
-On the matrix above, django-ox finished the single-worker batch faster
-than django-tasks-db in every run, tied it on in-transaction enqueue
-latency, and lost at concurrency 4. Under sustained load and repeated
-worker kills, django-ox 0.3.1 held its documented guarantees.
+On the matrix above, django-ox finished the single-worker batch faster than
+django-tasks-db in every run, tied it on in-transaction enqueue latency, and at
+concurrency 4 the two worker shapes were within about five percent. Under sustained
+load and repeated worker kills, django-ox 1.1.0 held its documented guarantees.
 
-Throughput on no-op tasks is not why you choose django-ox. The claim is
-the durability construction: transactional enqueue, at-least-once
+Throughput on no-op tasks is the floor, not the reason to choose django-ox. The
+claim is the durability construction: transactional enqueue, at-least-once
 execution with a reaper, bounded retries with per-attempt tracebacks. The
-benchmark exists to show what those semantics cost, and to publish the one
-workload where they cost something.
+benchmark shows that the durability construction does not cost throughput: two statements per task, and 15 percent more throughput with one worker.

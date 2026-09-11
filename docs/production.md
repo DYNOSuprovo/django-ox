@@ -1,9 +1,10 @@
 # Production
 
 The worker is a plain foreground process: `manage.py ox_worker`, run
-under whatever supervises your other processes. It treats a lost database
-connection as fatal rather than retrying blind, and relies on the
-supervisor to restart it. Run it under `Restart=always` (as in the unit
+under whatever supervises your other processes. It rides out a database that goes away and comes back: a failed pass is
+logged as `worker_poll_failed`, the connection is reopened, and the loop
+carries on. A process manager is still what brings it back from a crash or a
+recycle. Run it under `Restart=always` (as in the unit
 below). This page covers systemd,
 scaling, shutdown, the reaper, and monitoring.
 
@@ -103,14 +104,6 @@ Run migrations before rolling workers, as an init container or a job, not from
 the worker itself. Several workers starting at once would race the same
 migration.
 
-Roll every process before using a status the old version cannot read. 0.3.0
-adds DISCARDED: a 0.2.1 process that reads a discarded row raises
-`ValueError` from `get_result()` and `refresh()`, and its `ox_prune` cannot
-delete the row. Migrate, finish the rollout, then discard. A rollback to
-0.2.1 with discarded rows present keeps the crash until those rows are
-deleted by hand (`DELETE FROM django_ox_oxtask WHERE status = 'DISCARDED'`);
-reversing the migration does not remove them.
-
 ## Graceful shutdown
 
 On SIGTERM or SIGINT the worker:
@@ -167,13 +160,15 @@ Run as many workers as you need, on as many hosts as you need, pointed at
 the same database. No coordinator, no leader election. Two things make
 concurrent workers safe:
 
-- **Claiming is atomic.** On PostgreSQL, a claim is one
+- **Claiming is atomic.** On PostgreSQL a claim is one
   `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING`
-  statement, so workers never block each other on the head of the queue.
-  On other databases with `SKIP LOCKED` support (MySQL 8+), the worker
-  uses `SELECT ... FOR UPDATE SKIP LOCKED` in a short transaction. Databases without it, SQLite included, fall back to an optimistic
-compare-and-set UPDATE. That is atomic everywhere, but under contention workers
-can retry against each other for the head of the queue.
+  statement; on MySQL 8+ it is `SELECT ... FOR UPDATE SKIP LOCKED` inside a
+  short transaction. Either way workers step past each other's rows rather
+  than queueing behind them, so throughput scales with the workers you add.
+  Databases without `SKIP LOCKED` claim through an optimistic
+  compare-and-set, which is atomic everywhere and gives one worker at a time
+  the head of the queue; [PostgreSQL, MySQL or SQLite](#postgresql-mysql-or-sqlite)
+  says where to spend concurrency there.
 - **Recurring schedules need no dedicated node.** Every worker dispatches;
   a unique constraint guarantees each tick fires once. See
   [Recurring tasks](recurring-tasks.md#many-workers-one-tick).
@@ -232,17 +227,16 @@ is per slot:
   not a trip. Six workers that all die in the same second all come back a
   second later.
 
-Two things `--processes` does not do. It does not run on Windows, where
-there are no POSIX signals to forward; run one `ox_worker` per process there.
-And it does not replace a process manager: the supervisor is a foreground
-process that expects to be restarted itself, like the single worker.
+`--processes` is POSIX-only; on Windows run one `ox_worker` per process. It
+does not replace a process manager: the supervisor is a foreground process
+that expects to be restarted itself, like the single worker.
 
 ## The lease
 
 A worker that claims a task takes a lease on it: the row records who holds
 it, when the lock was last refreshed, and a lease number that goes up by one
 every time the task changes hands. Three things follow from that number, and
-they are worth understanding together because they are what makes recovery
+they belong together because they are what makes recovery
 safe.
 
 **The worker keeps its own lease alive.** While a task is executing, its
@@ -260,18 +254,27 @@ completion is signalled for it. This is arithmetic rather than timing: no
 pause is long enough to get around it, so a task that finished cannot be put
 back on the queue by a straggler.
 
-**Timestamps come from the database.** With `USE_TZ` on, the lock time is
-written by the database server and compared against the database server's
-clock, so two hosts with drifting clocks do not produce false reclaims. If you
-run workers on more than one host, that is the setting which gives them one
-clock, and it is Django's default.
+**Timestamps come from the database.** With `USE_TZ` on against PostgreSQL or
+MySQL, the lock time is written by the database server and compared against the
+database server's clock, so two hosts with drifting clocks do not produce false
+reclaims. If you run workers on more than one host, that is the setting which
+gives them one clock, and it is Django's default.
 
-With `USE_TZ` off the worker's clock is used instead. A database's own clock
-does not always match what these columns hold there: SQLite's is UTC while the
-columns carry naive local time, and reading one against the other would make
-`ox_prune --older-than` treat rows that finished seconds ago as hours old.
-Under that setting, keep `TIME_ZONE` and the timezone your workers run in the
-same, which is what Django assumes of it anyway.
+SQLite is the exception.
+Django's `Now()` compiles there to `STRFTIME(..., 'NOW')`, which SQLite
+evaluates inside the process that ran the statement. There is no server to
+stamp it, so every worker uses its own clock whatever `USE_TZ` says. Run SQLite
+on one host. It is the deployment SQLite is for, and a shared file over a
+network filesystem does not give you working locking either.
+
+With `USE_TZ` off the worker's clock is used on every database. Keep worker
+clocks within two thirds of `LOCK_TIMEOUT` of each other, the timeout less
+the renewal interval: a worker whose clock runs further ahead than that would
+read a neighbour's live lease as expired just before its renewal lands,
+reclaim it, and the task would run twice. A shared clock is the property
+`USE_TZ` on buys you on PostgreSQL and MySQL. Under that setting, keep
+`TIME_ZONE` and the timezone your workers run in the same, which is what
+Django assumes of it anyway.
 
 ### Task timeouts
 
@@ -447,7 +450,7 @@ happens next depends on whether the task has attempts left:
 
 - **Attempts remaining.** The task goes back to READY and the lease number
   goes up, so the old worker cannot write to it again. This is the ordinary
-  case, and it is a guess the system already absorbs: at-least-once execution
+  case, and at-least-once execution already covers it: at-least-once execution
   means the task may run twice, which is why task bodies must be idempotent.
 - **No attempts remaining.** The row is marked LOST. LOST means what it says:
   the worker holding this task stopped reporting and nobody observed how the
@@ -477,11 +480,11 @@ for retention. Like a failed row it can be retried or discarded, from the
 admin or with `django_ox.actions`; see
 [Retrying and discarding](monitoring.md#retrying-and-discarding).
 
-One case is worth knowing about before it surprises you. If the worker
+One case to know before it surprises you. If the worker
 holding a LOST task was starved rather than dead, and it comes back and
 records a success, the row becomes SUCCESSFUL and a caller reading it twice
 sees `FAILED` and then `SUCCESSFUL`. Only that one execution can do this, and
-only while the row is still LOST. It is the honest cost of giving a
+only while the row is still LOST. It is the cost of giving a
 four-valued API an answer for a task whose outcome nobody saw, and the
 alternative, reporting it as still running forever, hangs every caller that
 waits on it.
@@ -493,6 +496,34 @@ what reaches this state is a worker that went unresponsive for longer than
 act on in the first place. If your callers cannot tolerate seeing it, raise
 `LOCK_TIMEOUT` until a merely slow worker is never reclaimed; the cost is that
 a genuinely dead one takes that much longer to notice.
+
+### Attempts count claims
+
+`attempts` on a task row, the `attempt` key on every log record, and
+`MAX_ATTEMPTS` all count **claims**, not invocations. The number goes up in the
+same statement that hands the task to a worker, before the function is reached.
+
+That is deliberate and it is what makes the bound hold. A worker that is killed
+mid-run reports nothing, so a count that only moved on a reported failure would
+never move for it, and a task that reliably kills its worker would be retried
+without end, every reaper pass another start.
+
+The cost of the choice is the case at the other end. A task that loses its
+worker between the claim and the call has used an attempt without running, and
+a task that does so as many times as `MAX_ATTEMPTS` allows reaches a terminal
+state having never executed. The window is small: a worker claims only when it
+has a free thread and hands the task straight to it. It is not zero.
+
+Two consequences:
+
+- **Read `attempts` as "times this was handed out".** There is no column that
+  counts successful runs: `errors` holds one entry per *failed* attempt, so a
+  task that failed twice and then succeeded has three attempts and two
+  entries.
+- **A task that must not be retried on infrastructure loss** should be
+  idempotent, the same as it must be under any at-least-once queue. The lease
+  number stops a reaped worker writing its outcome over a later holder's; it
+  does not stop the work that worker already did.
 
 ### Tuning LOCK_TIMEOUT
 
@@ -509,10 +540,66 @@ was discarded because the lease had already been reclaimed, and a steady
 trickle of it means the timeout is short relative to how long your workers
 go unresponsive.
 
+**The value travels with the lease, not with the reaper.** A worker writes
+`lease_expires_at` on the row when it claims, from its own `LOCK_TIMEOUT`, and
+refreshes it on every renewal. Every reaper judges that column rather than
+deriving a deadline from whatever it happens to be configured with, so you can
+change `LOCK_TIMEOUT` in a rolling deploy: each row keeps the lease it was
+granted and picks up the new value on its next claim.
+
+The trade is that a lease outlives the configuration that granted it. If you
+grant a very long one by mistake, changing the setting does not shorten the
+leases already out; `django_ox.actions.expire_lease(result_id)` expires one so
+the next reaper pass takes it. It does not stop the task, and the lease number
+still refuses that task's finish write once somebody else holds the row, so it
+is the ordinary reclaim brought forward rather than a cancellation. Use
+`discard()` to close a task.
+
+
 **Tasks must be idempotent.** Execution is at-least-once by design: a task
 is retried both when it raises and when its worker dies mid-run. Write
 task bodies so that running twice is harmless (upserts, idempotency keys,
 "already sent?" checks).
+
+### What the lease guarantees, precisely
+
+One worker holds the lease on a task at a time, and a task runs at least once.
+Which of those the lease number enforces deserves precision, because the two
+are not the same guarantee.
+
+**Two workers cannot write the same row.** Every claim increments
+`lease_epoch`, and every write that ends an attempt carries the value the
+worker was given in its `WHERE` clause. A worker whose lease was reclaimed
+matches zero rows instead of overwriting whoever holds it now. That is
+arithmetic, not timing: no pause is long enough to defeat it, which is why a
+reclaimed worker cannot corrupt the record of a task it no longer owns.
+
+**Two threads can run the same task body at the same time.** The lease fences
+the row, not the function. There are two ways to get there:
+
+- A task outlives `TASK_TIMEOUT`. The worker asks the thread to stop, and after
+  `TASK_TIMEOUT_GRACE` it publishes the retry and recycles. The old thread is
+  still running while the retry is claimed elsewhere, because nothing in
+  CPython can stop a thread that is inside a call which never returns.
+- A worker is partitioned from the database for longer than `LOCK_TIMEOUT`. It
+  is still executing; the reaper cannot tell it apart from a dead one and gives
+  the task to somebody else.
+
+So the rule is the same one every at-least-once queue asks for, and it *is*
+every at-least-once queue rather than a property of this one. Sidekiq's [reliability notes](https://github.com/sidekiq/sidekiq/wiki/Reliability)
+say a job in flight is lost when a process is killed under the default fetch.
+Oban's [rescue plugin](https://github.com/oban-bg/oban/blob/main/lib/oban/lifeline.ex)
+documents that it "may transition jobs that are genuinely executing and cause
+duplicate execution". Que's [README](https://github.com/que-rb/que/blob/master/docs/README.md)
+describes a killed worker's job as unlocked and retried with its error count
+untouched. Celery with [`acks_late`](https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-acks-late)
+leaves redelivery to the broker and counts nothing. All read 2026-09-11.
+
+Where a task must not overlap with itself at any cost, the options are the same
+as anywhere else: make the body idempotent, take an application-level lock the
+task checks on entry, or give the queue a timeout long enough that the backstop
+is not reached in normal operation. What this package adds is that the *record*
+of the task cannot be corrupted while you do it.
 
 ## PostgreSQL, MySQL or SQLite
 
@@ -524,11 +611,16 @@ All three run the full worker suite in CI. Guidance:
 - **MySQL 8** claims with `SELECT ... FOR UPDATE SKIP LOCKED` in a short
   transaction and runs the full suite in CI on the oldest and newest Python
   and Django corners.
-- **SQLite** is fine for development, tests, and small single-host
-  deployments in the same situations where SQLite is fine as your Django
-  database at all. Claiming uses the compare-and-set path and remains
-  correct with multiple workers, but SQLite's single-writer nature makes
-  many busy workers on one file a poor fit.
+- **SQLite** is the right choice wherever SQLite is already the right choice
+  for your Django database: development, tests, and small single-host
+  deployments. Run one worker and give it threads (`ox_worker
+  --concurrency 8`) rather than several worker processes. A thread pool in one
+  process is how a single-writer database wants to be driven, and it
+  is enough for the IO-bound work a single-host deployment usually queues.
+  Claiming stays correct with more processes than that: a worker that loses
+  the head of the queue retries against the next few candidates rather than
+  stepping past locked rows, so throughput stops scaling with processes well
+  before it would on PostgreSQL.
 
 The queue lives in your default database, inside your existing backup and
 migration story. That is the point: one system of record, one thing to
@@ -541,7 +633,7 @@ summary:
 
 - **The table is the queue.** `django_ox.stats` exposes queue depth,
   backlog age, throughput and failure rate as plain functions. Backlog
-  depth and backlog age are the two numbers worth alerting on.
+  depth and backlog age are the two numbers to alert on.
 - **`manage.py ox_health`** turns thresholds on those numbers into an
   exit code, for cron alerting and container probes.
 - **The Prometheus endpoint.** Mounting `django_ox.urls` serves the same

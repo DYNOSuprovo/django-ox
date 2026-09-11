@@ -64,6 +64,22 @@ class OxTask(models.Model):
     locked_by = models.CharField(max_length=64, null=True, blank=True)
     locked_at = models.DateTimeField(null=True, blank=True)
 
+    # When this lease stops being valid, written by the worker that took it.
+    #
+    # Stored on the row so every reaper in a fleet judges a lease by the
+    # same deadline, whatever LOCK_TIMEOUT each one was started with; the
+    # setting can change in a rolling deploy without two workers disagreeing
+    # about which rows are abandoned. NULL means a lease
+    # taken before this column existed, and the reaper falls back to comparing
+    # locked_at against its own timeout for those; the first renewal after an
+    # upgrade fills it in, so a fleet converges lease by lease with no step an
+    # operator has to run.
+    #
+    # It does not give the two ends one clock. _lease_now() already decides
+    # which clock stamps the lease, and this is written by the same one; the
+    # production page says where that is shared and where it is not.
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+
     # Fencing token. Every claim, and every reaper requeue, increments it in
     # the same UPDATE that hands the row over, so it identifies one execution
     # rather than merely one task. A worker carries the value it was given
@@ -75,11 +91,36 @@ class OxTask(models.Model):
 
     class Meta:
         indexes = [
+            # Two shapes because the claim has two shapes, and one btree
+            # cannot serve both. The query is an equality on status, an
+            # optional restriction on queue_name, a range on run_after, and
+            # `ORDER BY priority DESC, enqueued_at`.
+            #
+            # `ox_dequeue_idx` ends on the sort columns with nothing variable
+            # in front of them, so it delivers rows in claim order for a
+            # worker that names several queues or names none at all, which is
+            # the default. `ox_dequeue_queue_idx` puts queue_name first and is
+            # tighter for a worker pinned to exactly one queue, the shape the
+            # production page recommends: it walks only that queue's rows
+            # instead of filtering the others out. PostgreSQL picks between
+            # them per query.
+            #
+            # `run_after` is in neither: a range condition behind the sort
+            # columns is unusable by a btree, and an index that ends there
+            # loses the ordering.
             models.Index(
-                fields=["status", "queue_name", "-priority", "run_after"],
+                fields=["status", "-priority", "enqueued_at"],
                 name="ox_dequeue_idx",
             ),
+            models.Index(
+                fields=["status", "queue_name", "-priority", "enqueued_at"],
+                name="ox_dequeue_queue_idx",
+            ),
             models.Index(fields=["status", "locked_at"], name="ox_reaper_idx"),
+            # The reaper's selection, once a row carries its own expiry.
+            models.Index(
+                fields=["status", "lease_expires_at"], name="ox_reaper_expiry_idx"
+            ),
         ]
 
     def __str__(self) -> str:

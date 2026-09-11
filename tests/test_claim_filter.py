@@ -7,16 +7,21 @@ from django_ox.worker import POSTGRES_CLAIM_SQL, Worker, worker_class
 
 from .tasks import add, echo, send_email
 
-# What 0.3.1 emitted, spelled out rather than derived from the template: a
-# test that formatted the template twice would agree with any stray newline
-# the template grew. Written line by line because the condition line renders
-# as bare indentation when nothing filters, and an editor would strip it.
-CLAIM_SQL_0_3_1_NO_QUEUES = (
+# The statement this package emits, spelled out rather than derived from the
+# template: a test that formatted the template twice would agree with any stray
+# newline the template grew. Written line by line because the condition line
+# renders as bare indentation when nothing filters, and an editor would strip
+# it.
+#
+# Editing this fixture is how a change to the claim statement is declared
+# deliberate. The test exists to catch the other kind.
+EXPECTED_CLAIM_SQL_NO_QUEUES = (
     "\n"
     'UPDATE "ox_task" SET\n'
     '    "status" = %(running)s,\n'
     '    "locked_by" = %(worker_id)s,\n'
     '    "locked_at" = STATEMENT_TIMESTAMP(),\n'
+    '    "lease_expires_at" = STATEMENT_TIMESTAMP() + %(lease_ttl)s,\n'
     '    "lease_epoch" = "lease_epoch" + 1,\n'
     '    "attempts" = "attempts" + 1,\n'
     '    "started_at" = COALESCE("started_at", STATEMENT_TIMESTAMP()),\n'
@@ -34,7 +39,7 @@ CLAIM_SQL_0_3_1_NO_QUEUES = (
     "RETURNING *\n"
 )
 
-CLAIM_SQL_0_3_1_WITH_QUEUES = CLAIM_SQL_0_3_1_NO_QUEUES.replace(
+EXPECTED_CLAIM_SQL_WITH_QUEUES = EXPECTED_CLAIM_SQL_NO_QUEUES.replace(
     "        \n", '        AND "queue_name" = ANY(%(queues)s)\n'
 )
 
@@ -52,22 +57,29 @@ class BlockAdd(Worker):
 
 
 class TestRenderedClaimSql:
-    def test_empty_fragment_renders_0_3_1_byte_for_byte(self):
+    def test_the_statement_renders_byte_for_byte(self):
         assert (
-            POSTGRES_CLAIM_SQL.format(table="ox_task", queue_clause="", extra_clause="")
-            == CLAIM_SQL_0_3_1_NO_QUEUES
+            POSTGRES_CLAIM_SQL.format(
+                lease_clock="STATEMENT_TIMESTAMP()",
+                table="ox_task",
+                queue_clause="",
+                extra_clause="",
+            )
+            == EXPECTED_CLAIM_SQL_NO_QUEUES
         )
         assert (
             POSTGRES_CLAIM_SQL.format(
+                lease_clock="STATEMENT_TIMESTAMP()",
                 table="ox_task",
                 queue_clause='AND "queue_name" = ANY(%(queues)s)',
                 extra_clause="",
             )
-            == CLAIM_SQL_0_3_1_WITH_QUEUES
+            == EXPECTED_CLAIM_SQL_WITH_QUEUES
         )
 
     def test_fragment_lands_inside_the_candidate_select(self):
         sql = POSTGRES_CLAIM_SQL.format(
+            lease_clock="STATEMENT_TIMESTAMP()",
             table="ox_task",
             queue_clause="",
             extra_clause=' AND "task_path" <> ALL(%(blocked)s)',
@@ -134,3 +146,114 @@ class TestWorkerClass:
         }
         with pytest.raises(ImproperlyConfigured, match="is not a"):
             worker_class()
+
+
+class _QOnly(Worker):
+    """A subclass that narrows what it may claim, the queryset hook only."""
+
+    def claim_filter_q(self):
+        return Q(queue_name="allowed")
+
+
+class _Both(_QOnly):
+    """The same exclusion, told to both claim paths."""
+
+    def claim_filter_sql(self):
+        return 'AND "queue_name" = %(only_queue)s', {"only_queue": "allowed"}
+
+
+@pytest.mark.django_db
+class TestAFilterThatReachesOnlyOneClaimPath:
+    """
+    The single-statement PostgreSQL claim builds its own SQL, so it reads
+    `claim_filter_sql()` and cannot see `claim_filter_q()`. A subclass that
+    overrides the queryset hook alone would narrow SQLite and MySQL and claim
+    the excluded rows on PostgreSQL, with nothing raised and nothing logged.
+    """
+
+    def _settings(self, settings, worker_class_path):
+        settings.TASKS = {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default", "allowed"],
+                "OPTIONS": {"WORKER_CLASS": worker_class_path},
+            }
+        }
+
+    def test_the_exclusion_holds_on_every_database(self, settings):
+        self._settings(settings, f"{__name__}._QOnly")
+        add.using(queue_name="default").enqueue(1, 2)
+        worker = _QOnly(backoff_initial=0)
+        assert worker.claim_one() is None, (
+            "a row the subclass excluded was claimed anyway; on PostgreSQL "
+            "the fast path never saw the filter"
+        )
+
+    def test_an_allowed_row_is_still_claimed(self, settings):
+        self._settings(settings, f"{__name__}._QOnly")
+        add.using(queue_name="allowed").enqueue(1, 2)
+        worker = _QOnly(backoff_initial=0)
+        claimed = worker.claim_one()
+        assert claimed is not None, "the filter excluded a row it allows"
+        assert claimed.queue_name == "allowed"
+
+    def test_it_says_why_it_gave_up_the_fast_path(self, settings, caplog):
+        import logging
+
+        self._settings(settings, f"{__name__}._QOnly")
+        worker = _QOnly(backoff_initial=0)
+        with caplog.at_level(logging.WARNING, logger="django_ox"):
+            # Asked directly: the check only runs on the PostgreSQL fast path,
+            # so going through claim_one() would say nothing on SQLite and
+            # this is about the notice being said once, not about the vendor.
+            worker._postgresql_honours_the_claim_filter()
+            worker._postgresql_honours_the_claim_filter()
+        said = [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "claim_filter_sql_missing"
+        ]
+        assert len(said) == 1, f"said it {len(said)} times; once per worker"
+
+    def test_a_subclass_that_implements_both_keeps_the_fast_path(self, settings):
+        self._settings(settings, f"{__name__}._Both")
+        worker = _Both(backoff_initial=0)
+        assert worker._postgresql_honours_the_claim_filter()
+
+    def test_a_worker_with_no_filter_keeps_the_fast_path(self, settings):
+        self._settings(settings, f"{__name__}._QOnly")
+        plain = Worker(backoff_initial=0)
+        assert plain._postgresql_honours_the_claim_filter()
+
+
+class TestTheLeaseClockInTheRenderedSql:
+    """
+    One clock stamps the lease, and this statement has to agree with
+    `_lease_now()`. With USE_TZ on both are the database's. With it off
+    `_lease_now()` is the worker's clock, so hard coding the server's here
+    would put two clocks on one column: a worker whose clock ran behind the
+    server would renew to a timestamp the reaper already read as expired.
+    """
+
+    def test_with_time_zone_support_the_server_stamps_it(self, settings):
+        settings.USE_TZ = True
+        sql = POSTGRES_CLAIM_SQL.format(
+            lease_clock="STATEMENT_TIMESTAMP()",
+            table="ox_task",
+            queue_clause="",
+            extra_clause="",
+        )
+        assert '"locked_at" = STATEMENT_TIMESTAMP()' in sql
+
+    def test_without_it_the_worker_stamps_it(self):
+        sql = POSTGRES_CLAIM_SQL.format(
+            lease_clock="%(lease_now)s",
+            table="ox_task",
+            queue_clause="",
+            extra_clause="",
+        )
+        assert '"locked_at" = %(lease_now)s' in sql
+        assert "STATEMENT_TIMESTAMP()" not in sql, (
+            "one of the claim's three timestamps still comes from the server "
+            "while the renewal uses the worker's clock"
+        )

@@ -8,10 +8,8 @@ API on identical workloads:
    installed from PyPI), driven per its own README: `db_worker` management
    command, `django_tasks_db.DatabaseBackend` in `TASKS`.
 
-The point of this harness is credibility, not marketing. It reports every
-run, keeps both backends at defaults except where a flag is required to run
-at all, and states its limitations plainly. If django-tasks-db wins a
-metric, the results file says so.
+The harness reports every run, keeps both backends at defaults except where a
+flag is required to run at all, and states its scope plainly.
 
 ## What is measured
 
@@ -27,13 +25,13 @@ stacks present the same public API.
 | Metric | Definition |
 | --- | --- |
 | Enqueue throughput | Wall time for 2,000 sequential `noop.enqueue()` calls from a single producer process in autocommit mode. Reported as tasks/sec. |
-| Enqueue latency in `transaction.atomic()` | 500 iterations; each opens its own `transaction.atomic()` block and times only the `enqueue()` call inside it (COMMIT excluded). Reported as p50/p95 milliseconds (nearest-rank on the sample). |
+| Enqueue latency in `transaction.atomic()` | 500 iterations; each opens its own `transaction.atomic()` block and times only the `enqueue()` call inside it (COMMIT excluded). Reported as p50/p95 milliseconds, the nearest-rank value of the sorted sample (rank `round(q * n + 0.5)`, counted from 1). |
 | End-to-end completion | 2,000 no-op tasks pre-loaded as READY. Clock starts immediately before the worker process(es) are spawned and stops when the database shows 2,000 SUCCESSFUL rows (polled every 50 ms over a separate connection). Includes worker process startup and Django initialization, identically for both backends. |
 
-Each metric runs **3 times per backend** and all three runs are reported.
-No best-of, no discarded runs. If a run errors or times out it appears in
+Each metric runs `--runs` times per backend (default 3; the published results use 5) and every run is reported.
+If a run errors or times out it appears in
 the results as an error. Backends are interleaved (run 1 ox, run 1
-tasksdb, run 2 ox, ...) so slow system drift cannot systematically favor
+tasksdb, run 2 ox, ...) so slow system drift cannot systematically favour
 whichever ran last.
 
 ### Concurrency in the end-to-end metric
@@ -43,22 +41,18 @@ whichever ran last.
 - django-tasks-db: its `db_worker` command is single-threaded and has **no
   concurrency option**, so "concurrency 4" is **4 worker processes**. This
   is its documented scaling model, but it is not the same thing as 4
-  threads in one process: 4 processes get 4 CPUs' worth of Python and 4
-  separate DB connections, while ox's threads share one interpreter (and
-  its GIL). Read the concurrency-4 rows with that asymmetry in mind; it is
+  threads in one process: 4 processes get 4 CPUs' worth of Python, while ox's threads share one interpreter and its GIL. Read the concurrency-4 rows with that asymmetry in mind; it is
   the fairest mapping the two designs allow.
 
-### Diagnostic row (ox only, clearly non-default)
+### Control row (ox only, non-default interval)
 
 The defaults-only end-to-end rows are the comparison. In addition, the
 harness runs one extra ox configuration per run: concurrency 1 with
 `--interval 0.1` instead of the default 1.0. The worker is designed to
 wake on task completion whenever tasks are in flight, so `--interval`
-should only govern how often an idle worker checks for new work; the
-diagnostic row proves that property empirically on every run by matching
-the default-interval cell. It is recorded under a separate
-`e2e_diagnostic` key, labeled non-default, and is never presented as ox's
-headline number.
+should only govern how often an idle worker checks for new work; the control row shows that property on every run by matching the
+default-interval cell. It is recorded under a separate `e2e_diagnostic` key
+and labelled non-default.
 
 ### Warmup
 
@@ -89,10 +83,9 @@ Recorded automatically into the raw results JSON at run time
 (`collect_environment()` in `bench.py`). The machine used for the published
 results:
 
-- Apple M1 Max, 10 logical cores (8 performance + 2 efficiency), 64 GiB RAM
-  (from `sysctl -n machdep.cpu.brand_string`, `sysctl hw.memsize`)
-- macOS 26.5.2
-- Python 3.12.13, Django 6.0.8, psycopg 3.3.4 (binary)
+- Apple M1 Max, 10 logical cores, 64 GiB RAM
+- macOS, Python, Django, psycopg and PostgreSQL versions: the `environment`
+  block of the published raw file, recorded at run time
 - PostgreSQL 16 (official `postgres:16` image) in Docker Desktop,
   port-forwarded to localhost:54330, container `ox-bench`, default
   PostgreSQL configuration
@@ -109,12 +102,12 @@ pip install django-tasks-db psycopg[binary]
 Then, from this `benchmarks/` directory:
 
 ```
-python bench.py
+python bench.py --runs 5
 ```
 
 The script starts Docker Desktop if needed, creates the `ox-bench`
 container and the two databases (`bench_ox`, `bench_tasksdb`), runs
-migrations for both backends, then runs the full 3-run matrix. Progress
+migrations for both backends, then runs the full matrix. Progress
 prints as it goes; raw numbers checkpoint continuously to
 `results-raw-<date>.json`, and per-process logs land in `logs/`.
 
@@ -122,20 +115,19 @@ Cleanup afterwards (the script leaves the container up so runs can be
 repeated cheaply):
 
 ```
-docker --context desktop-linux rm -f ox-bench
-osascript -e 'quit app "Docker"'
+docker rm -f ox-bench
 ```
 
-The published `results-<date>.md` is derived from the raw JSON; the JSON
-is the source of truth and ships alongside it.
+The published results page is `docs/benchmarks.md`, written from the raw
+JSON; the JSON is the source of truth and ships alongside it.
 
-## Limitations
+## Scope
 
-Read these before quoting any number.
+Read this before quoting any number.
 
 - **Single machine, single run day.** One Mac, one OS state, no controlled
   thermal or background-load environment. Numbers describe relative
-  behavior on this hardware; absolute performance elsewhere will differ.
+  behaviour on this hardware; absolute performance elsewhere will differ.
 - **Localhost database.** PostgreSQL runs in Docker on the same machine
   with sub-millisecond round trips. Real deployments have network latency
   between app and database, which would compress the relative differences
@@ -144,7 +136,7 @@ Read these before quoting any number.
   virtualized I/O and port forwarding. This is not a production database
   host; both backends face the same handicap.
 - **Small N.** 2,000 tasks and 500 latency samples are enough to separate
-  the backends here but not to characterize tail behavior (p99+) or
+  the backends here but not to characterize tail behaviour (p99+) or
   sustained load. Queue-depth effects beyond 2,000 rows are not measured.
 - **No-op task bodies.** Real tasks do work; with realistic task bodies the
   per-task framework overhead measured here shrinks as a fraction of total
@@ -152,10 +144,9 @@ Read these before quoting any number.
 - **Thread pool vs process model at concurrency 4.** See above; the two
   backends scale by different mechanisms and the concurrency-4 comparison
   maps them as fairly as their designs allow, which is not perfectly.
-- **End-to-end timer includes startup.** Roughly half a second of Django
-  boot per worker process is inside the timed window for both backends (4x
-  for tasksdb's 4-process configuration, which is a real cost of a
-  process-per-worker model, but worth knowing when reading the numbers).
+- **End-to-end timer includes startup.** Worker process startup and Django
+  initialisation are inside the timed window for both backends, once per
+  worker process.
 - **Whole stacks compared.** ox rides Django 6.0 core
   `django.tasks`; tasks-db rides the external `django_tasks` package. Any
   overhead difference between those frameworks is included in the totals.
@@ -169,22 +160,20 @@ sustained mixed load from several producer and worker processes over tens
 of minutes, repeated SIGKILL of workers mid-task with restarts, and a
 forced crash-restart of a worker holding claimed tasks. Every task
 execution writes phase rows with a per-execution nonce to a `soak_ledger`
-side table, so at-least-once vs exactly-once behavior is measured from
+side table, so at-least-once vs exactly-once behaviour is measured from
 side effects and asserted from the database afterwards. It runs against
 the same PostgreSQL 16 container the test suite uses (`ox-pg`, port 54329;
 see CONTRIBUTING.md for the docker run command) with its own `soak_ox`
-database and the `soaksite/` settings module. Methodology, parameters, and results:
-[SOAK-2026-08-16.md](SOAK-2026-08-16.md), raw data in
-`soak-results-raw-<date>.json`.
+database and the `soaksite/` settings module. Methodology, parameters, and results: [SOAK-2026-09-11.md](SOAK-2026-09-11.md),
+raw data in `soak-results-raw-<date>.json`.
 
 ## Files
 
-- `bench.py`: orchestrator plus per-measurement subprocess roles. The
-  orchestrator never imports Django; each measurement is a fresh process.
+- `bench.py`: orchestrator plus per-measurement subprocess roles. The orchestrator imports Django only to record the environment; each measurement is a fresh process.
 - `benchsite/`: minimal settings and task modules for each backend.
 - `results-raw-<date>.json`: every number the harness produced, including
   all 500 individual latency samples per run.
-- `results-<date>.md`: the human-written results document.
+- `docs/benchmarks.md` (in the repository root's docs): the results page.
 - `soak.py` / `soaksite/`: soak and chaos harness (see above).
 - `SOAK-<date>.md` / `soak-results-raw-<date>.json`: its results.
 - `logs/`: stdout/stderr of every producer and worker process.
