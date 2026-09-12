@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-09-12
 
 **One migration ships with this release.** `0007_oxschedule` creates two
 tables, `django_ox_oxschedule` and `django_ox_oxschedulechange`, with a unique
@@ -783,6 +783,7 @@ Initial release.
   the public API surface, the pre-1.0 SemVer rule, the deprecation
   window, and the supported Python and Django matrix.
 
+[1.2.0]: https://github.com/oxpull/django-ox/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/oxpull/django-ox/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/oxpull/django-ox/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/oxpull/django-ox/compare/v0.3.1...v0.4.0
