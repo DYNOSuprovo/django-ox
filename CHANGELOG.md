@@ -145,7 +145,8 @@ for your engine.
   Actions enable, disable, and run a schedule once immediately; a manual run
   writes no tick row, so the next scheduled tick still fires. It is also the
   one way to run a paused schedule: it ignores both `enabled` and `end_time`,
-  and says how many of the schedules it ran were disabled or already ended.
+  and says how many of the schedules it ran were disabled or already ended, and
+  how many it was refused by a registry entry's own permission.
   The changelist carries `end_time`, so a row that has ended is visible where
   the selection is made.
 - `manage.py ox_import_beat_schedules`, which reads a `django-celery-beat`

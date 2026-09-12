@@ -491,9 +491,14 @@ class OxScheduleAdmin(_ScheduleAdmin):
         alias, options = self._stored_backend()
         source = stored.DatabaseScheduleSource(options, alias)
         now = timezone.now()
-        run, skipped, overridden = 0, 0, 0
+        run, skipped, overridden, refused = 0, 0, 0, 0
         for schedule in queryset:
             if not self.has_change_permission(request, schedule):
+                # Counted separately from `skipped`, which reports a row
+                # that cannot run as written: telling an operator their
+                # payroll schedule is broken when they are simply not
+                # allowed to run it sends them to fix the wrong thing.
+                refused += 1
                 continue
             try:
                 built = source._to_schedule(schedule)
@@ -513,6 +518,12 @@ class OxScheduleAdmin(_ScheduleAdmin):
             self.message_user(
                 request,
                 f"Skipped {skipped} schedule(s) that cannot run as written.",
+                messages.WARNING,
+            )
+        if refused:
+            self.message_user(
+                request,
+                f"Skipped {refused} schedule(s) you do not have permission to change.",
                 messages.WARNING,
             )
         if overridden:

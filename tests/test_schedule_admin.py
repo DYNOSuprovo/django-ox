@@ -405,6 +405,86 @@ class TestRunOnceNowSaysWhatItRan:
         )
 
 
+class TestRunOnceNowReportsAPermissionRefusal:
+    """
+    A registry entry may declare its own permission, and a user without it
+    cannot run that schedule. The refusal is enforced; what was missing was
+    the report. The action counted nothing and said "Enqueued 0 task(s)."
+    in the success style, so an operator refused a payroll schedule could
+    not tell a permission refusal from a broken row, an unregistered task
+    or a misconfigured backend -- while Disable, on the same row, said so
+    plainly.
+    """
+
+    def _post(self, client, action, pks):
+        return client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {"action": action, "_selected_action": [str(pk) for pk in pks]},
+            follow=True,
+        )
+
+    def test_a_refused_row_is_reported_rather_than_counted_as_nothing(
+        self, client, staff_user
+    ):
+        row = a_schedule(name="payroll", task_key="restricted")
+        client.force_login(staff_user)
+        response = self._post(client, "run_once_now", [row.pk])
+        messages = [str(m) for m in response.context["messages"]]
+        assert "Enqueued 0 task(s)." in messages
+        assert "Skipped 1 schedule(s) you do not have permission to change." in messages
+        assert OxTask.objects.count() == 0
+
+    def test_the_wording_is_the_one_the_sibling_action_already_uses(
+        self, client, staff_user
+    ):
+        # Same row, same user, both actions: an operator who has seen one
+        # report reads the other without learning a second vocabulary.
+        row = a_schedule(name="payroll", task_key="restricted")
+        client.force_login(staff_user)
+        wordings = {}
+        for action in ("disable_selected", "run_once_now"):
+            response = self._post(client, action, [row.pk])
+            wordings[action] = sorted(
+                str(m) for m in response.context["messages"] if "permission" in str(m)
+            )
+        assert wordings["run_once_now"], "the run action reported no refusal at all"
+        assert wordings["run_once_now"] == wordings["disable_selected"], (
+            f"two wordings for one refusal: {wordings}"
+        )
+
+    def test_a_partial_refusal_is_not_reported_as_plain_success(
+        self, client, staff_user
+    ):
+        allowed = a_schedule(name="allowed")
+        refused = a_schedule(name="payroll", task_key="restricted")
+        client.force_login(staff_user)
+        response = self._post(client, "run_once_now", [allowed.pk, refused.pk])
+        messages = [str(m) for m in response.context["messages"]]
+        assert "Enqueued 1 task(s)." in messages
+        assert "Skipped 1 schedule(s) you do not have permission to change." in messages
+        assert OxTask.objects.count() == 1
+
+    def test_a_broken_row_is_still_reported_as_broken(self, client, admin_user):
+        # The other branch keeps its own wording: a superuser is refused
+        # nothing, and telling them a row is unrunnable is the true report.
+        OxSchedule.objects.create(
+            name="broken",
+            task_key="report",
+            trigger="cron",
+            cron="banana",
+            start_time=timezone.now(),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        client.force_login(admin_user)
+        response = self._post(
+            client, "run_once_now", [OxSchedule.objects.get(name="broken").pk]
+        )
+        messages = [str(m) for m in response.context["messages"]]
+        assert "Skipped 1 schedule(s) that cannot run as written." in messages
+        assert not any("permission" in m for m in messages)
+
+
 class TestReEnableThroughTheChangeForm:
     def test_the_boundary_moves(self, client, admin_user):
         # Through the form, not the action. save_model hands update_schedule
