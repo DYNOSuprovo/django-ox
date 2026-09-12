@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**One migration ships with this release.** `0007_oxschedule` creates two
+tables, `django_ox_oxschedule` and `django_ox_oxschedulechange`, with a unique
+index on the schedule name and a check constraint. It touches neither the task
+table nor the tick log, so there is no index build on a table workers are
+reading: on PostgreSQL the locks are on the new tables only, inside one
+transaction, and on MySQL each `CREATE TABLE` takes a metadata lock on its own
+new name. Enqueues, claims and the dispatch of settings schedules carry on
+through it, and a 1.1.0 worker keeps running beside a worker on this release
+once it is applied. Migrate before starting any worker whose backend names
+`django_ox.stored.DatabaseScheduleSource`, and before opening the schedule
+admin: both read the new tables.
+
+Migrating back to `0006` drops both tables and every stored schedule with
+them. The tick log keeps its rows, including those named `db:<id>` for
+schedules that no longer exist. A worker on this release that is still running
+warns on every pass that it cannot read the schedule tables, and keeps dispatching
+the settings schedules from the set it last read; stop it, or migrate forward
+again. `sqlmigrate django_ox 0007` prints the statements for your engine.
+
 ### Added
 
 - `manage.py ox_import_beat_schedules`, which reads a `django-celery-beat`
