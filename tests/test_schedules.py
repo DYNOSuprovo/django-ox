@@ -920,7 +920,12 @@ class TestTheTickReadFitsTheParameterLimit:
         expected = self._seed(schedules, at)
         # Four parameters per statement: three keys and the bound. On the
         # class, because SQLite's is a property that reads the live limit.
+        # Django 6.1 made PostgreSQL's a cached_property, and a value already
+        # cached on the instance shadows the class, so the patch has to clear
+        # it. Without the pop this test reads PostgreSQL's real 65535, takes
+        # the ten keys in one statement, and fails for the wrong reason.
         monkeypatch.setattr(type(connection.features), "max_query_params", 4)
+        connection.features.__dict__.pop("max_query_params", None)
         worker = Worker(backoff_initial=0)
         with CaptureQueriesContext(connection) as captured:
             latest = worker._latest_ticks(schedules, at - timedelta(days=1))
