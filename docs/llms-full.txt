@@ -3623,6 +3623,12 @@ again. `sqlmigrate django_ox 0007` prints the statements for your engine.
   slices of what the connection allows; PostgreSQL, MySQL and current SQLite
   declare no limit and read them in one statement as before. Present in
   1.1.0.
+- An enqueue that fails with an integrity error is reported even when
+  another worker claims the same tick in the same instant. The dispatch loop
+  told a failing enqueue from a lost race by asking the log whether the tick
+  row existed, and a winner committing between the rollback and that read
+  made the failure look like a lost race, so it was retried silently. The two
+  are now told apart by whether this pass's own tick row had gone in.
 
 ### Changed
 

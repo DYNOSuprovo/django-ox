@@ -2327,6 +2327,10 @@ class Worker:
                 self._log_tick_dropped(schedule, scheduled_for, now)
                 continue
             result = None
+            # Set once this pass's tick row is in. An IntegrityError arriving
+            # with it clear is the INSERT losing the constraint; with it set,
+            # a later statement's.
+            claimed = False
             # Set as the last thing the transaction body does. An exception
             # arriving with it set came from the block's exit, after the
             # commit, which is where transaction.on_commit callbacks run.
@@ -2389,6 +2393,7 @@ class Worker:
                         task_id=None,
                         created_at=now,
                     )
+                    claimed = True
                     # A schedule that anchors records its first sighting
                     # without firing, because first observation is the only
                     # boundary it has. One carrying its own start_time was
@@ -2437,20 +2442,19 @@ class Worker:
                 # on it.
                 continue
             except IntegrityError:
-                # Almost always another worker claiming this tick first: its
-                # INSERT won and ours rolled back before it enqueued
-                # anything. But the enqueue is inside the same block, so an
-                # integrity failure raised by the task write arrives here
-                # too, and reading every one as a lost race would retry it
-                # silently for as long as it kept failing. The tick row is
-                # what a winner leaves behind, and a failing enqueue takes
-                # this pass's own row down with it, so the row's presence is
-                # what separates the two.
-                if not (
-                    OxScheduleTick.objects.using(self._db_alias)
-                    .filter(schedule_name=schedule.key, scheduled_for=scheduled_for)
-                    .exists()
-                ):
+                # Two things raise this inside the block, told apart by how
+                # far the block had got. Before the tick row is in, it is the
+                # INSERT itself: another worker claimed this tick first, its
+                # INSERT won, and ours rolled back before it enqueued
+                # anything. Silent, and the ordinary case on every tick with
+                # more than one worker. Once the row is in, the failure is a
+                # later statement's, the enqueue's or the latch's, and
+                # reading it as a lost race would retry it silently for as
+                # long as it kept failing. Asking the log whether the tick
+                # row exists cannot tell them apart: a winner committing
+                # between the rollback and that read made a real failure
+                # look like a lost race.
+                if claimed:
                     logger.exception(
                         "Schedule %s could not be dispatched this pass",
                         schedule.name,

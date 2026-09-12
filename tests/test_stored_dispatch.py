@@ -1074,8 +1074,9 @@ class TestAnIntegrityErrorFromTheEnqueueIsNotALostRace:
     """
     The enqueue and the tick INSERT share one transaction, so an integrity
     failure raised by the task write surfaces the same way a lost race
-    does. A winner leaves a tick row behind and a failing enqueue does not,
-    which is what separates them. Read as a lost race, a real failure would
+    does. What separates them is how far the block had got: a lost race is
+    the tick INSERT itself failing, and a failing enqueue comes after this
+    pass's own tick row went in. Read as a lost race, a real failure would
     be retried silently for as long as it kept failing.
     """
 
@@ -1099,7 +1100,68 @@ class TestAnIntegrityErrorFromTheEnqueueIsNotALostRace:
         ], "a failing enqueue was read as another worker winning the race"
         assert not OxScheduleTick.objects.exists(), "a tick was claimed anyway"
 
-    def test_a_genuine_lost_race_stays_silent(self, worker, caplog):
+    @pytest.mark.django_db(transaction=True)
+    def test_a_failing_enqueue_is_reported_even_as_another_worker_claims_the_tick(
+        self, worker, caplog, monkeypatch
+    ):
+        # The log cannot tell the two apart: a winner whose INSERT was
+        # waiting on this pass's uncommitted row lands the moment this pass
+        # rolls back, so a read of the log after the rollback finds a tick
+        # row and says "lost race" about a failure that was this worker's.
+        import logging
+        import threading
+        import time
+
+        from django.db import IntegrityError, connection
+        from django.utils import timezone as tz
+
+        row = a_minutely()
+        key = f"db:{row.pk}"
+        tick = tz.now().replace(second=0, microsecond=0)
+        winner_done = threading.Event()
+
+        def another_worker_claims_the_tick():
+            try:
+                OxScheduleTick.objects.create(
+                    schedule_name=key, scheduled_for=tick, created_at=tz.now()
+                )
+            finally:
+                connection.close()
+                winner_done.set()
+
+        winner = threading.Thread(target=another_worker_claims_the_tick)
+
+        def boom(*args, **kwargs):
+            # The other worker's INSERT waits on this pass's uncommitted row
+            # and goes through the moment the failure below rolls it back.
+            winner.start()
+            time.sleep(0.2)
+            raise IntegrityError("the task write failed")
+
+        rollback = connection.rollback
+
+        def rollback_then_let_the_winner_land():
+            # The instant the log would be asked about: after this pass's
+            # rollback, once the waiting INSERT has gone through.
+            rollback()
+            winner_done.wait(timeout=10)
+
+        monkeypatch.setattr("django_ox.backend.OxBackend.enqueue", boom, raising=True)
+        monkeypatch.setattr(connection, "rollback", rollback_then_let_the_winner_land)
+        with caplog.at_level(logging.ERROR, logger="django_ox"):
+            assert worker.dispatch_schedules() == 0
+        winner.join(timeout=30)
+        assert not winner.is_alive()
+        assert OxScheduleTick.objects.filter(
+            schedule_name=key, scheduled_for=tick
+        ).exists(), "the other worker's claim should stand"
+        assert [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "schedule_dispatch_error"
+        ], "this worker's failing enqueue was read as the other worker winning"
+
+    def test_a_genuine_lost_race_stays_silent(self, worker, caplog, monkeypatch):
         import logging
 
         from django.utils import timezone as tz
@@ -1112,8 +1174,14 @@ class TestAnIntegrityErrorFromTheEnqueueIsNotALostRace:
             created_at=tz.now(),
         )
         assert tick.pk
+        # With a current view the pass would skip the tick before the
+        # INSERT and never race at all. The race is a stale view: the log
+        # read before the loop says nothing is recorded, and the INSERT is
+        # what finds out otherwise.
+        monkeypatch.setattr(worker, "_latest_ticks", lambda schedules, since: {})
         with caplog.at_level(logging.ERROR, logger="django_ox"):
-            worker.dispatch_schedules()
+            assert worker.dispatch_schedules() == 0
+        assert OxTask.objects.count() == 0, "the loser enqueued"
         assert not [
             r
             for r in caplog.records
