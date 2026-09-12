@@ -124,7 +124,10 @@ a task thread that its timeout could not stop; see
 
 This maps directly onto rolling deploys: send SIGTERM, wait, start the new
 version. The only tuning point is the process manager's kill escalation
-(`TimeoutStopSec` above) relative to your longest task.
+(`TimeoutStopSec` above) relative to your longest task. One caveat for the
+upgrade from 1.1.0, in the changelog under this release's migration note: a
+settings schedule first seen while both versions are running can be anchored
+twice, and its second tick does not fire.
 
 With `--processes` above 1, the signal goes to the supervisor, and SIGHUP
 counts as well as SIGTERM and SIGINT. The sequence is:
@@ -171,7 +174,7 @@ concurrent workers safe:
   the head of the queue; [PostgreSQL, MySQL or SQLite](#postgresql-mysql-or-sqlite)
   says where to spend concurrency there.
 - **Recurring schedules need no dedicated node.** Every worker dispatches;
-  a unique constraint guarantees each tick fires once. See
+  a unique constraint stops two workers enqueueing the same tick. See
   [Recurring tasks](recurring-tasks.md#many-workers-one-tick).
 
 Workers can also be split by queue: run

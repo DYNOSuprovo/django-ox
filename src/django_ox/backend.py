@@ -4,6 +4,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from django.apps import apps
+from django.conf import settings
 from django.core import checks
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import router, transaction
@@ -163,7 +164,11 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E001",
                 )
             )
-        from .schedules import schedule_name_collisions, schedules_from_options
+        from .schedules import (
+            schedule_name_collisions,
+            schedule_source_from_options,
+            schedules_from_options,
+        )
 
         try:
             schedules_from_options(self.options, self.alias)
@@ -175,6 +180,129 @@ class OxBackend(BaseTaskBackend):
                     id="django_ox.E002",
                 )
             )
+        # Only when the project named a source. The default source builds
+        # from SCHEDULES and raises the same error E002 has just reported,
+        # so running this unconditionally would report every bad schedule
+        # twice under two different ids.
+        #
+        # Built, not merely imported: a source that raises on construction
+        # would otherwise start a worker that dispatches nothing and reports
+        # nothing.
+        try:
+            if self.options.get("SCHEDULE_SOURCE"):
+                schedule_source_from_options(self.options, self.alias)
+        except ImproperlyConfigured as exc:
+            errors.append(
+                checks.Error(
+                    str(exc),
+                    hint=(
+                        "Fix OPTIONS['SCHEDULE_SOURCE'], or remove it to read "
+                        "schedules from OPTIONS['SCHEDULES']."
+                    ),
+                    id="django_ox.E006",
+                )
+            )
+        # Registered here as well as by the decorator, because a check runs
+        # without importing application code and this is the only channel it
+        # can see. Registration is idempotent for an identical kind, so a key
+        # declared in both channels is not a collision.
+        from .registry import kinds_from_options
+
+        try:
+            kinds_from_options(self.options, self.alias)
+        except ImproperlyConfigured as exc:
+            errors.append(
+                checks.Error(
+                    str(exc),
+                    hint="Fix the SCHEDULABLE_TASKS entry of this backend's OPTIONS.",
+                    id="django_ox.E007",
+                )
+            )
+        # One database, or the constraint is not a coordination mechanism.
+        # A due tick is enqueued once because the task row and the tick row
+        # commit or roll back together; two connections cannot do that, and
+        # a tick committed without its task is one nothing will run again.
+        # The default router sends everything to one database, so this only
+        # ever fires on a project that wrote its own.
+        from django.db import router
+
+        from .models import OxSchedule, OxScheduleTick, OxTask
+
+        routed = {
+            model._meta.object_name: router.db_for_write(model)
+            for model in (OxTask, OxScheduleTick, OxSchedule)
+        }
+        if len(set(routed.values())) > 1:
+            errors.append(
+                checks.Error(
+                    "django-ox models are routed to more than one database: "
+                    + ", ".join(
+                        f"{name} to {alias!r}" for name, alias in routed.items()
+                    )
+                    + ".",
+                    hint=(
+                        "A task row and its schedule tick row must commit in one "
+                        "transaction, so they must live on one database. Route "
+                        "the django_ox app to a single database."
+                    ),
+                    id="django_ox.E008",
+                )
+            )
+        # Names that differ only by case are one key to a case-insensitive
+        # collation, which is MySQL's default. On MySQL the collision is
+        # real and silent, so it is refused; elsewhere it is a portability
+        # hazard worth naming, because the same settings deployed against
+        # MySQL would starve one of the two schedules.
+        from django.db import connections as _connections
+        from django.db import router as _router
+
+        from .models import OxScheduleTick as _Tick
+        from .schedules import schedule_names_folding_together
+
+        folding = schedule_names_folding_together(self.alias)
+        if folding:
+            pairs = ", ".join(f"{a!r} and {b!r}" for a, b in folding)
+            tick_db = _router.db_for_write(_Tick)
+            on_mysql = _connections[tick_db].vendor == "mysql"
+            message = (
+                f"Schedule names differing only by case: {pairs}. The schedule "
+                "tick log decides identity with its column's collation, so on a "
+                "case-insensitive one these share a key: their ticks collide and "
+                "one schedule stops running."
+            )
+            hint = "Give each schedule a name that differs by more than case."
+            errors.append(
+                checks.Error(message, hint=hint, id="django_ox.E009")
+                if on_mysql
+                else checks.Warning(message, hint=hint, id="django_ox.W002")
+            )
+        # A tick's identity is (schedule name, tick time), and under
+        # USE_TZ=False that time is stored as a naive wall clock. Where the
+        # clock goes back, one label covers two instants, so the second is
+        # read as a tick already recorded. A cron schedule then fires once
+        # rather than twice, which is arguable; an interval loses roughly
+        # half its runs for the length of the repeated hour, which is not.
+        # Not fixable without changing what the tick log stores, and that
+        # table's schema is a published promise.
+        if not settings.USE_TZ:
+            from .schedules import zone_repeats_an_hour
+
+            if zone_repeats_an_hour():
+                errors.append(
+                    checks.Warning(
+                        f"USE_TZ is off and TIME_ZONE is {settings.TIME_ZONE!r}, "
+                        "which puts the clock back once a year. Schedule ticks "
+                        "are recorded against the wall clock, so an interval "
+                        "schedule loses about half its runs for the length of "
+                        "the repeated hour and a cron schedule inside it fires "
+                        "once rather than twice.",
+                        hint=(
+                            "Set USE_TZ = True, or set TIME_ZONE to a zone with "
+                            "no daylight-saving transition such as 'UTC'."
+                        ),
+                        id="django_ox.W001",
+                    )
+                )
         from .timeouts import lease_timing_problems, task_timeout_problems
 
         for problem in lease_timing_problems(self.options):

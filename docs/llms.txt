@@ -95,9 +95,28 @@ Operational facts to get right:
   wakes as one finishes. There is no LISTEN/NOTIFY.
 - Recurring tasks are declared in `OPTIONS["SCHEDULES"]` as `{name: {"task":
   "dotted.path", "cron": "0 3 * * *"}}`. Every worker dispatches schedules and
-  a unique constraint on (schedule name, tick time) makes each tick fire once,
-  so there is no separate scheduler process. Bad schedules fail
-  `manage.py check` and worker startup.
+  a unique constraint on (schedule name, tick time) stops two workers enqueueing
+  the same tick, so there is no separate scheduler process. After an outage only
+  the most recent missed tick is enqueued and older ones are skipped, and a new
+  schedule never fires for a time before it existed. Bad schedules fail
+  `manage.py check` and worker startup. `every` (a timedelta or seconds, with
+  an optional `phase`) is the alternative to `cron`; interval ticks are counted
+  from a fixed instant, not from the last run, so a restart cannot shift the
+  cadence.
+- Schedules can be stored as rows and edited in the Django admin without a
+  deploy. Set `OPTIONS["SCHEDULE_SOURCE"]` to
+  `"django_ox.stored.DatabaseScheduleSource"`. A row names a key exposed in
+  code with `@schedulable` or `OPTIONS["SCHEDULABLE_TASKS"]`, never an import
+  path, so admin change permission does not become permission to run any
+  callable. `@schedulable` takes effect only when its module is imported, and
+  django-ox imports each installed app's `tasks` module.
+  `django_ox.stored.create_schedule` and `update_schedule` are the
+  write path; `objects.create()` skips validation because Django's `save()`
+  does not call `full_clean()`. A stored schedule carries `start_time` as its
+  activation boundary, so retiming reschedules from the moment of the change
+  rather than firing a tick that already passed, and re-enabling a paused
+  schedule does not replay the ticks it missed. `starting_deadline_seconds`
+  drops a tick later than that instead of running it however stale.
 - `python manage.py ox_health` exits 0 when the database answers, and takes
   `--max-backlog`, `--max-age` and `--worker-timeout` thresholds that turn
   queue stats into a non-zero exit for probes and cron alerting.

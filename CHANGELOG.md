@@ -5,6 +5,247 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-12
+
+**One migration ships with this release.** `0007_oxschedule` creates two
+tables, `django_ox_oxschedule` and `django_ox_oxschedulechange`, with a unique
+index on the schedule name and a check constraint. It touches neither the task
+table nor the tick log, so there is no index build on a table workers are
+reading: on PostgreSQL the locks are on the new tables only, inside one
+transaction, and on MySQL each `CREATE TABLE` takes a metadata lock on its own
+new name. Enqueues, claims and the dispatch of settings schedules carry on
+through it, and a 1.1.0 worker keeps running beside a worker on this release
+once it is applied. Migrate before starting any worker whose backend names
+`django_ox.stored.DatabaseScheduleSource`, and before opening the schedule
+admin: both read the new tables.
+
+One thing a rolling deploy does not close. A settings schedule that has no
+tick yet and is first seen during the rollout can be anchored twice, once by
+a 1.1.0 worker and once by a worker on this release, when their passes hold
+different ticks: the 1.1.0 worker does not take the first-sighting latch this
+release adds, so the latch serialises only the new workers. The later of the
+two ticks is then recorded with no task and does not fire. That is the race
+1.1.0 has between two of its own workers, not one this release introduces,
+and it ends when the last 1.1.0 worker stops. Once a schedule has any tick,
+both versions coordinate on the tick log's unique index and nothing anchors
+again. Stored schedules are not affected: a row carries its boundary and never
+anchors.
+
+Migrating back to `0006` drops both tables and every stored schedule with
+them. The tick log keeps its rows, including those named `db:<id>` for
+schedules that no longer exist. A worker on this release that is still
+running warns on every pass that it cannot read the schedule tables, and
+keeps dispatching the settings schedules from the set it last read; stop it,
+or migrate forward again. `sqlmigrate django_ox 0007` prints the statements
+for your engine.
+
+### Added
+
+- `OPTIONS["SCHEDULE_SOURCE"]`, a dotted path to the class a worker asks for
+  its active schedules on every dispatch pass. It defaults to reading
+  `OPTIONS["SCHEDULES"]`, so settings-declared schedules are unchanged. A
+  source owns its own freshness, which is what lets one read somewhere that
+  changes without the worker knowing. `django_ox.E006` reports a source that
+  cannot be built or has no `schedules()` method.
+- Fixed-interval schedules. A `SCHEDULES` entry takes `every` instead of
+  `cron`, as a `timedelta` or a number of seconds, with an optional `phase`
+  to offset the sequence. Exactly one of `cron` and `every` is required.
+  Ticks are counted from a fixed instant rather than from the last run, so a
+  restart, a pause or an edit cannot shift the cadence: every worker derives
+  the same instants from the definition alone, which is what keeps dispatch
+  leaderless. `every` must be at least one second, because the dispatch loop
+  cannot honour anything faster.
+- A tick whose instant has not arrived is not enqueued. On the day a zone
+  springs forward, an hour of wall-clock labels never happens, and a label
+  inside it resolves to an instant on the far side of the gap. That tick is
+  held until its instant arrives and fires once.
+- A registry of the tasks a schedule may name. `@schedulable("reports.daily")`
+  above `@task` exposes a task under a key, and `OPTIONS["SCHEDULABLE_TASKS"]`
+  does the same from settings, which is the only channel a system check can
+  see. It is the boundary the stored schedules rest on: a row names a key the
+  code owns rather than a dotted path anyone with the change permission could
+  choose. Registration is discovered lazily on first use, so a project not
+  using the registry imports nothing it did not already import. An entry may
+  declare a `permission`, checked in addition to the model permissions before
+  a schedule naming that key is written, when a `user` is passed; it is
+  enforced in `django_ox.stored`, not only in the admin. `django_ox.E007`
+  reports a bad entry.
+- `django_ox.registry.ArgsForm`, a Django form for a schedule's arguments
+  that closes two defaults written for HTML posts rather than stored rows: an
+  unknown argument is an error instead of being ignored, and a text field
+  refuses a non-string instead of coercing it, so `5` cannot reach a task as
+  `"5"`.
+- `OxSchedule`, a recurring schedule stored as a database row so it can be
+  created, retimed and paused without a deploy, and `OxScheduleChange`, the
+  single row a worker reads to know whether the stored schedules moved. A row
+  names a registry key rather than an import path. It carries `start_time` as
+  its activation boundary, written when the row is created rather than when a
+  worker first notices it, and records the timing and pause state that
+  boundary was set for, so retiming a schedule reschedules it from the moment
+  of the change instead of firing a tick that already passed. Because that
+  record is derived from the row rather than incremented by a write path, a
+  retime or a pause made with a bulk `update()` is noticed too, at the next
+  read, and the boundary moves to that read: the worker remembers the
+  boundary it found the row stale against, so a row re-enabled the same way
+  before the move is written still gets it. It keeps that memory until the
+  move commits, so a dispatch pass run inside a transaction the caller rolls
+  back has forgotten nothing by its next one. However many workers find the row
+  stale together, only the first of them moves the boundary: the row counts
+  its boundary writes and each worker records the count it saw, because a heal
+  writes the boundary to its own clock, and writing it is not the same as
+  changing it. A change made and reverted between two reads is not, and the
+  schedules page says what that means for a bulk pause and resume. Ticks are
+  recorded against the row, as `db:<id>`, so renaming a schedule keeps its
+  history; a settings-declared schedule may not use that prefix, and
+  `manage.py check` refuses one that does.
+- `start_time` and `end_time` bound which ticks of a stored schedule fire, and
+  `starting_deadline_seconds` drops a tick that is later than the deadline
+  rather than running it however stale. The deadline is judged under the
+  row's lock, after any wait for it, so a tick that crossed it while another
+  worker or an admin save held the row is dropped rather than run late. The
+  default is no deadline, which is the behaviour settings-declared schedules
+  have always had. A dropped tick logs `schedule_tick_dropped` with its
+  lateness, once per worker, so it can be alerted on instead of vanishing.
+- `django_ox.stored.DatabaseScheduleSource`, which dispatches the stored
+  schedules alongside any `SCHEDULES` entries. Name it in
+  `OPTIONS["SCHEDULE_SOURCE"]` and a row can be created, retimed and paused
+  without a deploy or a restart. Rows are re-read when the change row moves,
+  and in full every `OPTIONS["SCHEDULE_RECONCILE_INTERVAL"]` seconds (default
+  60) as the backstop for a row written without `django_ox.stored`, so the
+  steady state is one read of one row per dispatch pass. A row that no longer
+  validates is skipped and logged as `schedule_row_skipped`; the others still
+  run. When the rows cannot be read at all, the worker logs
+  `schedule_source_unavailable`, with the database's own message and no
+  traceback, and keeps dispatching the set it last read.
+- A schedule disabled, retimed or deleted after a worker read it does not
+  fire. The check runs inside the dispatch transaction, under the row's own
+  lock, because no polling interval is short enough to close that window. It
+  is taken with a locking read where the database has one, and on SQLite by
+  making the transaction a writer before it reads, because
+  `select_for_update()` there is a silent no-op. A refused tick commits
+  nothing.
+- `django_ox.stored.create_schedule`, `update_schedule` and
+  `delete_schedule`, the supported programmatic write path. They validate,
+  maintain the boundary and bump the change row. They take the fields a
+  schedule's author owns and refuse the rest with a `TypeError` naming what
+  they do take: the activation boundary, the count of writes to it and the
+  two timestamps are theirs to maintain, and a misspelled field name is
+  reported rather than set on the instance and silently not saved.
+  `create_schedule` still takes `start_time`, which is a new schedule's
+  boundary. `save()` does not call
+  `full_clean()`, so a `clean()` method alone would validate what the admin
+  submits and nothing that `objects.create()` writes. A valid row written
+  that way still runs, with its boundary moved to the read that found it and
+  logged as `schedule_boundary_healed`.
+- A Django admin for stored schedules, the first place the package lets a
+  person author a row rather than act on one a worker wrote. The task field
+  is a choice drawn from the registry, so it cannot
+  express a task the code has not exposed, and the same membership check runs
+  again on the model for the write paths that build no form. A registry
+  entry's own `permission` comes back as an error on that field, with the
+  submission intact, rather than as a bare 403 that discards it; the
+  permission itself is enforced in `django_ox.stored` as before, on every
+  write path. Saving routes
+  through `django_ox.stored`, so a schedule retimed in the admin gets its
+  activation boundary moved rather than keeping one set for its old timing.
+  Actions enable, disable, and run a schedule once immediately; a manual run
+  writes no tick row, so the next scheduled tick still fires. It is also the
+  one way to run a paused schedule: it ignores both `enabled` and `end_time`,
+  and says how many of the schedules it ran were disabled or already ended, and
+  how many it was refused by a registry entry's own permission.
+  The changelist carries `end_time`, so a row that has ended is visible where
+  the selection is made. The backend a manual run enqueues through is found the
+  way the worker finds it: the class `OPTIONS["SCHEDULE_SOURCE"]` names is
+  built and asked whether it answers `schedules()`, so any source the worker
+  would dispatch from is found, whatever it is called and whatever it
+  inherits, and a subclass is the class the run builds its schedule with.
+  The changelist and the add page say so when no backend names a source at
+  all, because until one does,
+  a schedule saved there is stored and never dispatched, with nothing else
+  to say so: no error, no log, no system check, and a manual run that
+  enqueues anyway.
+- `manage.py ox_import_beat_schedules`, which reads a `django-celery-beat`
+  schedule table and prints the django-ox equivalents. It writes nothing, names
+  what it could not translate and why, and says which timing will differ.
+- `django_ox.E008` reports django-ox models routed to more than one database.
+  A task row and its tick row commit together, which is what makes a due tick
+  enqueue once, so they must share a database. Routing the app to a single
+  non-default database is supported.
+- `django_ox.E009` and `django_ox.W002` report two configured schedule names
+  that differ only by case. Tick identity is decided by the column's
+  collation, and MySQL's default folds case, so the two share one key: their
+  ticks collide and one schedule stops running with nothing raised. Refused on
+  MySQL, warned about elsewhere.
+- `django_ox.W001` reports `USE_TZ = False` together with a `TIME_ZONE` that
+  puts the clock back once a year. A tick's time is stored as a wall clock
+  there, so one label covers both passes of the repeated hour: an interval
+  schedule loses about half its runs for the length of it, and a cron schedule
+  inside it fires once rather than twice. The schedules page states the effect.
+- `schedule_lock_unavailable`: a lock the database gave up waiting for,
+  MySQL's lock-wait timeout or a deadlock it resolved against this worker,
+  SQLite's busy timeout, PostgreSQL's `lock_timeout`, is logged once without
+  a traceback, and the schedule is skipped this pass; its tick fires on a
+  later pass if still unclaimed. In 1.1.0 the same timeout on a
+  settings-declared schedule's tick ended the whole poll pass as
+  `worker_poll_failed`, with a traceback, and the claim did not run that
+  pass.
+
+### Fixed
+
+- A settings-declared schedule anchors once, however many workers first see it
+  and whatever tick each of them holds. Two workers whose first passes fell
+  either side of a minute boundary, or whose clocks differed by one, each
+  wrote an anchor: their rows had different tick times, so the unique
+  constraint serialised neither, and neither read saw the other's
+  uncommitted row. The later instant was then claimed with no task, and the
+  run it was for never happened. A pass that reads no history now takes a
+  per-schedule latch inside its transaction before it decides, so the second
+  worker waits, sees the anchor, and fires. The latch is a tick row at an
+  instant no trigger produces, 1900-01-01, written and deleted inside the
+  transaction, so nothing ever reads it. Present in 1.1.0.
+- The tick read at the start of a dispatch pass fits the database's
+  parameter limit. It names every schedule in one `IN` list, and SQLite
+  before 3.32.0 refuses a statement with more than 999 parameters, so a
+  deployment with that many schedules on SQLite 3.31 dispatched nothing,
+  every pass. The keys are now read in slices of what the connection allows;
+  PostgreSQL, MySQL and current SQLite declare no limit and read them in one
+  statement as before. Present in 1.1.0.
+- An enqueue that fails with an integrity error is reported as
+  `schedule_dispatch_error`. In 1.1.0 every integrity error inside the
+  dispatch block was read as a lost race with another worker, so an enqueue
+  that kept failing was retried silently on every tick. The two are now told
+  apart by whether this pass's own tick row had gone in.
+- A `transaction.on_commit` callback that raises after a dispatch commits is
+  logged as `schedule_dispatch_callback_failed`, with the task id, and the
+  dispatch is counted, since the task exists and the tick is recorded,
+  whatever the callback raised: a database error from a callback's own
+  statement is the callback's too, not a lost race or a fault that ends
+  the pass. In
+  1.1.0 the exception left the dispatch pass with the task committed and,
+  unless it was a database error, left `run()` too and stopped the worker.
+  The stored-schedules page states the lock order a `task_enqueued` receiver
+  must respect: it runs inside the dispatch transaction, under the schedule
+  row's lock.
+
+### Changed
+
+- A database error inside the dispatch pass ends the pass, logged once as
+  `schedule_dispatch_failed`; a connection that is no longer usable is
+  dropped, and the claim still runs on a fresh one. In 1.1.0 the same error
+  ended the whole poll pass as `worker_poll_failed` and the claim waited for
+  the next one. Anything else one schedule raises is logged against that
+  schedule as `schedule_dispatch_error` and the rest of the pass continues.
+- Schedule dispatch runs on every pass whether or not a schedule is
+  configured, because a source that reads the database can gain one at any
+  time. With nothing configured it returns on a list check, before any query.
+- The recurring-tasks page states what the tick log guarantees. It
+  deduplicates the enqueue: a unique constraint on (schedule name, tick time)
+  stops two workers enqueueing the same tick. It does not make a task run
+  exactly once, and it does not enqueue every cron occurrence, because only
+  the latest missed tick is enqueued after an outage and a new schedule never
+  fires for a time before it existed. The README, the production page and
+  the agent-facing files say the same.
+
 ## [1.1.0] - 2026-09-11
 
 **Two migrations ship with this release.** `0005_dequeue_index` rebuilds the
@@ -515,8 +756,8 @@ Initial release.
   `duration_ms`, ...) for JSON log handlers.
 - Recurring tasks: cron schedules declared in the `TASKS` setting
   (`SCHEDULES` option), dispatched by the workers themselves; a unique
-  constraint on (schedule, tick) makes each tick fire exactly once across
-  any number of workers. Five-field cron syntax plus `@hourly`-style
+  constraint on (schedule, tick) enqueues each due tick once across any
+  number of workers. Five-field cron syntax plus `@hourly`-style
   shortcuts; misconfigured schedules fail at startup and in
   `manage.py check`. On recovery after downtime, only the latest missed
   tick fires.
@@ -542,6 +783,7 @@ Initial release.
   the public API surface, the pre-1.0 SemVer rule, the deprecation
   window, and the supported Python and Django matrix.
 
+[1.2.0]: https://github.com/oxpull/django-ox/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/oxpull/django-ox/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/oxpull/django-ox/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/oxpull/django-ox/compare/v0.3.1...v0.4.0

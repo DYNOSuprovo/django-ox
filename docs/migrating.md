@@ -153,8 +153,9 @@ TASKS = {
 }
 ```
 
-Schedules in settings deploy with your code, so there are no rows to edit by
-hand. A typo fails at `manage.py check` instead of at dispatch time.
+Schedules in settings deploy with your code, and a typo fails at
+`manage.py check` instead of at dispatch time. If your team edits schedules in
+the admin today, see [Schedules in the database](stored-schedules.md).
 
 | huey | django-ox |
 | --- | --- |

@@ -58,6 +58,9 @@ retry. Add options when you have a reason to.
 | `TASK_TIMEOUT_GRACE` | `30` | Seconds a timed-out attempt gets to stop. A thread still running after that is treated as stuck, which usually means it is in a call that never returns to Python, where the exception cannot land: the worker records the attempt as failed, stops claiming, drains its other tasks and exits with code 75 so its supervisor restarts it. A task that catches `TaskTimeout` has the same deadline to return or raise, and so does a task on a watched thread, where nothing was raised at all. |
 | `WORKER_CLASS` | unset | Dotted path of a `django_ox.worker.Worker` subclass for `ox_worker` to run, on every process it starts. See [Stability](stability.md). |
 | `SCHEDULES` | `{}` | Recurring task definitions. Documented on the [Recurring tasks](recurring-tasks.md) page. |
+| `SCHEDULE_SOURCE` | settings | Dotted path to the class a worker asks for its active schedules. Set it to `django_ox.stored.DatabaseScheduleSource` to read them from the database. See [Schedules in the database](stored-schedules.md). |
+| `SCHEDULE_RECONCILE_INTERVAL` | `60.0` | Seconds between full reads of the stored schedules, whether or not anything is known to have changed. The backstop for a row written without `django_ox.stored`. |
+| `SCHEDULABLE_TASKS` | `{}` | Tasks a stored schedule may name, as `{key: dotted path}` or `{key: {"task": ..., "form": ..., "permission": ...}}`. The alternative to the `@schedulable` decorator. |
 
 The retry delay after attempt *n* fails is
 `BACKOFF_INITIAL * 2 ** (n - 1)`, capped at `BACKOFF_MAX`. With the
@@ -92,9 +95,11 @@ Two intervals are derived rather than flagged:
 - The reaper runs every `min(30, max(lock_timeout / 2, 1))` seconds.
 - Lease renewal runs every `max(lock_timeout / 3, 0.1)` seconds, on its own
   thread, and keeps running until the last in-flight task has drained.
-- Schedule dispatch (when `SCHEDULES` is configured) runs every
-  `max(1, min(interval, 30))` seconds, about once a second at the default
-  polling interval.
+- Schedule dispatch runs every `max(1, min(interval, 30))` seconds, about once
+  a second at the default polling interval. It runs whether or not any schedule
+  is configured, because a source that reads the database can gain one at any
+  time; a pass with no schedules configured at all returns on a list check,
+  before any query.
 
 ### Routing a queue to its own worker
 
@@ -213,6 +218,28 @@ alert are on the
   queue name. Every bad value is reported in one run.
 - `django_ox.E005`: a `TASK_TIMEOUTS` key names a queue that is not in
   `QUEUES`, so the entry would never apply.
+- `django_ox.E006`: `SCHEDULE_SOURCE` does not name a class that can be
+  built and answers `schedules()`. Without this a worker would start,
+  dispatch nothing and report nothing.
+- `django_ox.E007`: a `SCHEDULABLE_TASKS` entry is invalid (task or form
+  path does not import, the form is not an `ArgsForm`, unknown keys, or a
+  key already registered for a different task).
+- `django_ox.E009` / `django_ox.W002`: two configured schedule names differ
+  only by case. The tick log decides identity with its column's collation, so
+  on a case-insensitive one, MySQL's default among them, the two share a key:
+  their ticks collide and one schedule stops running. Refused on MySQL,
+  reported as a warning elsewhere, because the same settings deployed against
+  MySQL would starve one of the two.
+- `django_ox.W001`: `USE_TZ` is off and `TIME_ZONE` puts the clock back once
+  a year. Tick times are stored against the wall clock, so the repeated hour
+  has one label for two instants: an interval schedule loses about half its
+  runs for the length of it, and a cron schedule inside it fires once rather
+  than twice. Set `USE_TZ = True`, or a zone with no transition.
+- `django_ox.E008`: a database router sends the django-ox models to more
+  than one database. A task row and its schedule tick row are written in one
+  transaction, which is what makes a due tick enqueue once, so they have to
+  live on the same database. Route the `django_ox` app to a single one; it
+  need not be the default.
 - `django_ox.E010`: `LOCK_TIMEOUT`, `BACKOFF_INITIAL` or `BACKOFF_MAX` is not a
   positive, finite number of seconds. The worker reads all three, so the check stops a bad value at deploy time.
 

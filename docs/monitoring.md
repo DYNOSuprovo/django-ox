@@ -252,6 +252,15 @@ The message text is not part of the contract. The keys are.
 | `task_lease_lost` | WARNING | A worker finished an attempt whose lease had already been reclaimed, so its write was dropped and no result was signalled. |
 | `lease_renew_failed` | WARNING | A lease renewal statement failed. The worker keeps going and tries again on the next interval. |
 | `schedule_dispatched` | INFO | A recurring tick enqueued its task. |
+| `schedule_tick_dropped` | WARNING | A tick was past its starting deadline and was not run. Carries `late_seconds`. Each worker reports a given tick once, not once per dispatch pass, so a schedule that stays droppable does not repeat the warning every second. |
+| `schedule_row_skipped` | WARNING | A stored schedule could not be used: its task key is not registered, its arguments no longer validate, or its timing does not parse. The others in the same pass still run. Carries `reason`. |
+| `schedule_dispatch_error` | ERROR | One schedule raised something unexpected: its task would not enqueue, its row raised. The rest of the pass continues. Not a database error; those end the pass as `schedule_dispatch_failed`. |
+| `schedule_dispatch_callback_failed` | WARNING | A `transaction.on_commit` callback registered by a `task_enqueued` receiver raised after the dispatch transaction committed. The task is enqueued, the tick is recorded and the dispatch is counted; the failure is the callback's. Carries `task_id`. |
+| `schedule_dispatch_failed` | WARNING | The dispatch pass hit a database error, wherever in the pass it was raised; the stored source's marker read and boundary heal are the exceptions, with events of their own below. The pass is abandoned and retried on the next one; a connection that is no longer usable is dropped, and the claim still runs. |
+| `schedule_source_unavailable` | WARNING | The stored schedules could not be read, so the worker is running on the set it last read rather than on none. Repeated every dispatch pass while the read keeps failing. A stream of it right after a deploy means the code is running ahead of migration `0007`. |
+| `schedule_lock_unavailable` | WARNING | The database gave up waiting for a lock another worker held: a stored schedule's row, or the tick row a settings-declared schedule's dispatch claims. MySQL's lock-wait timeout or a deadlock it resolved against this worker, SQLite's busy timeout, PostgreSQL's `lock_timeout`. The schedule is skipped this pass and its tick fires on a later one if still unclaimed. No traceback; a stream of it means one worker's dispatch transactions are long, which is usually a slow `task_enqueued` receiver. |
+| `schedule_boundary_healed` | INFO | A stored schedule's timing had changed without its activation boundary moving, so the boundary was moved onto the current timing. Expected after a bulk update; repeated for one schedule is not. |
+| `schedule_boundary_heal_failed` | WARNING | That move failed and will be retried. |
 | `worker_error` | ERROR | The execution wrapper itself raised (an internal worker error, not a task failure). |
 | `worker_poll_failed` | WARNING | A database error ended one pass of the poll loop. The pass is abandoned and retried on the next one; the worker keeps running. A steady stream of it means the database is unreachable rather than slow. |
 | `watchdog_error` | ERROR | The timeout watchdog failed to handle one armed attempt. Every other attempt is unaffected and the thread keeps running. |
@@ -287,7 +296,10 @@ The message text is not part of the contract. The keys are.
 | `count` | `task_reclaimed` without `task_id` | How many tasks that pass reclaimed. Present only on the batch record described above. |
 | `held_by` | `task_reclaimed` | The worker that stopped refreshing the lock, from the row. `worker_id` on the same record is the reaper that noticed. Absent on the batch record, along with `task_id`, `task_path`, `queue` and `attempt`. |
 | `dropped_status` | `task_lease_lost` | Status the dropped write would have set: `SUCCESSFUL`, `FAILED` or `READY`. |
-| `schedule` | `schedule_dispatched` | Schedule name from `SCHEDULES`. |
+| `schedule` | `schedule_dispatched`, `schedule_row_skipped`, `schedule_dispatch_error`, `schedule_dispatch_callback_failed`, `schedule_tick_dropped`, `schedule_lock_unavailable` for a settings-declared schedule | The schedule's name, from `SCHEDULES` or from its row. |
+| `schedule_pk` | `schedule_row_skipped`, `schedule_lock_unavailable` for a stored schedule, `schedule_boundary_healed` | The stored schedule's row id. Absent for a settings-declared schedule, which has no row. |
+| `scheduled_for`, `late_seconds` | `schedule_tick_dropped` | The tick that was dropped, and how late it was when the deadline rejected it. |
+| `reason` | `schedule_row_skipped` | Why the row could not be used. |
 | `queues`, `concurrency` | `worker_started` | The worker's configuration. |
 | `pending` | `worker_draining` | In-flight tasks at shutdown. |
 | `processes` | `supervisor_started` | Worker processes the supervisor runs. |

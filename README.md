@@ -229,8 +229,8 @@ queue, attempt, duration), ready for JSON log handlers.
 ## Recurring tasks
 
 Schedules are declared in settings, next to the backend they enqueue
-through, and deploy with your code. There are no rows to edit by hand and
-no separate scheduler process to keep alive:
+through, so they deploy with your code. There is no separate scheduler
+process to keep alive:
 
 ```python
 TASKS = {
@@ -257,13 +257,15 @@ TASKS = {
 Each tick enqueues a normal task instance, which workers claim and execute
 through the ordinary queue: retries, backoff, priorities and the result
 store all apply unchanged. Every running worker doubles as the scheduler,
-and a unique constraint on (schedule name, tick time) makes each tick fire
-exactly once however many workers are polling.
+and a unique constraint on (schedule name, tick time) enqueues each due tick
+once however many workers are polling. Execution stays at-least-once.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `task` | yes | Dotted path to a `@task` callable, e.g. `"reports.tasks.build_report"`. |
-| `cron` | yes | Five-field cron expression. |
+| `cron` | one of | Five-field cron expression. |
+| `every` | one of | A fixed interval, as a `timedelta` or seconds, counted from a fixed instant rather than from the last run. |
+| `phase` | no | Shifts an `every` sequence. |
 | `args`, `kwargs` | no | JSON-serializable arguments passed to each enqueue. |
 | `queue_name` | no | Queue override; defaults to the task's own queue. |
 | `priority` | no | Priority override (-100 to 100). |
@@ -284,6 +286,12 @@ missed tick fires once on recovery and older ones are skipped, so a
 nightly job still runs after an unlucky deploy window but a backlog never
 stampedes. A newly deployed schedule waits for its next tick rather than
 firing for a time before it existed.
+
+Schedules can also live in the database and be edited in the Django admin
+without a deploy, for the cases where whoever needs to pause a job cannot
+ship one. A row names a task the code has exposed rather than an import
+path, so admin access does not become permission to run anything. See
+[Schedules in the database](https://oxpull.com/django-ox/stored-schedules/).
 
 ## Behavior details
 

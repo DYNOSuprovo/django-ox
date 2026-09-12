@@ -101,8 +101,8 @@ django-ox follows [Semantic Versioning](https://semver.org/):
 - **Minor releases add, they do not break.** Patch releases are bug fixes
   only.
 
-Pin accordingly: `django-ox~=1.1.0` accepts patch releases only;
-`django-ox~=1.1` accepts the current major line.
+Pin accordingly: `django-ox~=1.2.0` accepts patch releases only;
+`django-ox~=1.2` accepts the current major line.
 
 ## Deprecation policy
 

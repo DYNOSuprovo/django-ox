@@ -13,7 +13,7 @@ from collections.abc import Callable, Coroutine
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from inspect import iscoroutinefunction
 from threading import Barrier, BrokenBarrierError, Condition, Event, Lock, Thread
 from traceback import format_exception
@@ -23,8 +23,10 @@ from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import (
+    DatabaseError,
     Error,
     IntegrityError,
+    OperationalError,
     close_old_connections,
     connections,
     router,
@@ -51,7 +53,12 @@ from django_ox.compat import (
 from .backend import OxBackend
 from .exceptions import TaskAbandoned, TaskTimeout
 from .models import OxScheduleTick, OxTask
-from .schedules import schedule_name_collisions, schedules_from_options
+from .schedules import (
+    Schedule,
+    lock_contention,
+    schedule_name_collisions,
+    schedule_source_from_options,
+)
 from .timeouts import (
     RECYCLE_EXIT_CODE,
     _deadline,
@@ -189,6 +196,36 @@ def _timeout_in(exc: BaseException) -> TaskTimeout | None:
         else:
             current = current.__context__
     return None
+
+
+class _NotAdmitted(Exception):
+    """
+    Raised inside the dispatch transaction to roll it back.
+
+    Not an error anyone sees: it is how a schedule that changed between
+    being read and being acted on, or a tick from before the schedule's
+    anchor, undoes a tick row that has already been written. Django rolls
+    an atomic block back on any exception, which is the shortest way out
+    of a write already made.
+    """
+
+
+def _latch_instant() -> datetime:
+    """
+    The fixed instant a first-sighting latch row is written at.
+
+    Before any tick a schedule can be due at, so the latch never collides
+    with this pass's own tick row and never falls inside the bounded tick
+    read, and inside every supported database's datetime range. Not the
+    epoch: an interval trigger counts from the epoch, so an interval
+    longer than the time since it puts a schedule's first tick exactly
+    there, and a latch at the same instant lost the unique index to the
+    tick row on every pass. A cron trigger looks back nine years at most,
+    and an interval tick is at or after the epoch in the project's zone.
+    Naive or aware to match USE_TZ, as every other tick is.
+    """
+    instant = datetime(1900, 1, 1)
+    return instant.replace(tzinfo=UTC) if settings.USE_TZ else instant
 
 
 @dataclass(slots=True)
@@ -511,7 +548,21 @@ class Worker:
             if schedule_interval is not None
             else max(1.0, min(self.poll_interval, 30.0))
         )
-        self.schedules = schedules_from_options(options, backend_alias)
+        self._schedule_source = schedule_source_from_options(options, backend_alias)
+        # Kept as an attribute because it is public and has been since 0.1.0.
+        # It is the source's answer at construction, which for the default
+        # settings source is its answer forever. Dispatch asks the source
+        # rather than reading this, so a source that changes is not stale
+        # here in any way that matters.
+        self.schedules = self._schedule_source.schedules()
+        #: The last dropped tick reported for each schedule. A dropped tick
+        #: writes no row, so nothing else stops it being recomputed and
+        #: re-reported on every pass until its next tick comes due, which
+        #: for a daily schedule is a warning a second for a day on the one
+        #: event the documentation says to alert on. Dispatch only ever
+        #: considers a schedule's latest tick, so one entry per schedule is
+        #: the whole of what has to be remembered.
+        self._dropped_reported: dict[str, datetime] = {}
         collisions = schedule_name_collisions(backend_alias)
         if collisions:
             name, other_alias = collisions[0]
@@ -875,7 +926,7 @@ class Worker:
         rows this worker still holds: the pk list is the executions running
         right now, and locked_by and status are checked in the same
         statement, so a row the reaper already took away or another worker
-        already claimed is not renewed by us.
+        already claimed is not renewed here.
 
         This is the whole of the worker's side of the lease. It is why the
         reaper reclaims work from workers that stopped rather than from
@@ -2013,10 +2064,12 @@ class Worker:
 
     # -- scheduling --------------------------------------------------------
 
-    def _latest_ticks(self, since: datetime) -> dict[str, datetime]:
+    def _latest_ticks(
+        self, schedules: list[Schedule], since: datetime
+    ) -> dict[str, datetime]:
         """
-        Latest recorded tick per schedule, counting only ticks at or after
-        `since`.
+        Latest recorded tick per dispatch key, for the pass's schedules,
+        counting only ticks at or after `since`.
 
         The bound is what keeps this cheap. Asked for the newest tick per
         schedule over all of history, no database can seek to it: PostgreSQL
@@ -2025,25 +2078,176 @@ class Worker:
         ever dispatched, paid on every pass by every worker, and `ox_prune`
         is the only thing holding it down.
 
-        `since` is the oldest tick any of this worker's schedules is
-        currently asking about, so the answer this method exists to give is
-        complete within it, and (schedule_name, scheduled_for) turns into a
-        range the index can seek. A schedule whose newest tick predates the
-        bound is absent from the result, which reads as "nothing recorded for
-        the tick in question", which is exactly what the caller does with it, and
+        `since` is the oldest tick any of the pass's schedules is currently
+        asking about, so the answer this method exists to give is complete
+        within it, and (schedule_name, scheduled_for) turns into a range the
+        index can seek. A schedule whose newest tick predates the bound is
+        absent from the result, which reads as "nothing recorded for the
+        tick in question", which is exactly what the caller does with it, and
         the caller distinguishes that from a schedule with no ticks at all by
         asking.
+
+        One parameter per key, plus the bound. SQLite before 3.32.0 refuses
+        a statement carrying more than 999, and Django splits an IN list
+        only where the backend declares a maximum, which is Oracle. So the
+        keys are read in slices of what the connection allows, and a
+        backend that declares no limit answers None and reads them in one.
         """
-        return {
-            row["schedule_name"]: row["latest"]
-            for row in OxScheduleTick.objects.using(self._db_alias)
-            .filter(
-                schedule_name__in=[schedule.name for schedule in self.schedules],
-                scheduled_for__gte=since,
+        keys = [schedule.key for schedule in schedules]
+        limit = connections[self._db_alias].features.max_query_params
+        step = max(limit - 1, 1) if limit else max(len(keys), 1)
+        latest: dict[str, datetime] = {}
+        for start in range(0, len(keys), step):
+            latest.update(
+                {
+                    row["schedule_name"]: row["latest"]
+                    for row in OxScheduleTick.objects.using(self._db_alias)
+                    .filter(
+                        schedule_name__in=keys[start : start + step],
+                        scheduled_for__gte=since,
+                    )
+                    .values("schedule_name")
+                    .annotate(latest=Max("scheduled_for"))
+                }
             )
-            .values("schedule_name")
-            .annotate(latest=Max("scheduled_for"))
-        }
+        return latest
+
+    def _anchor_boundary(self, key: str, own_pk: int, now: datetime) -> datetime | None:
+        """
+        The earliest tick recorded for `key` other than this pass's own row,
+        or None when there is none, which makes this pass the first sighting.
+
+        Called inside the dispatch transaction, after this pass's tick row
+        is in. That row is excluded because it is visible in here, and
+        counting it would make every schedule look like it already had
+        history.
+
+        A plain read cannot answer "none". Two workers whose first passes
+        fall either side of a minute boundary, or whose clocks differ by
+        one, hold different candidate ticks: their INSERTs take different
+        keys, so the constraint serialises neither, and neither's read sees
+        the other's uncommitted row. Both anchor, and the later instant is
+        claimed with no task and never fires. The constraint does serialise
+        workers that write the same key, so a pass that reads no history
+        writes one: a latch row at a fixed instant per schedule, inserted
+        and deleted again inside this transaction. The second worker's
+        latch INSERT waits for the first's transaction to end, as a unique
+        index does with an uncommitted duplicate. Once that commits, its
+        latch is gone, this INSERT goes through, and the read repeated
+        after it finds the anchor. The repeat is a locking read where the
+        database has one, so it is a current read rather than this
+        transaction's snapshot, and it skips locked rows where it can: a
+        row another worker has inserted and not committed is locked by
+        that worker, who may be waiting on this latch, and a locking read
+        that waited on it would deadlock. Skipping it is right in any
+        case, since an uncommitted row is not history. Every committed
+        row is unlocked, because the only thing that locks tick rows is
+        this read, and the latch admits one of it at a time.
+
+        Deleted rather than released with a savepoint. What the other
+        worker waits on is the transaction that owns the tuple; rolling a
+        savepoint back ends that wait before the anchor is committed, and
+        a delete does not.
+
+        The latch never commits, so nothing ever reads it: not the bounded
+        tick read, not ox_prune, not the admin. SQLite has one writer, so
+        the tick INSERT already serialises first sightings there, and the
+        latch is two statements that change nothing.
+        """
+        others = (
+            OxScheduleTick.objects.using(self._db_alias)
+            .filter(schedule_name=key)
+            .exclude(pk=own_pk)
+            .order_by("scheduled_for")
+            .values_list("scheduled_for", flat=True)
+        )
+        earliest = others.first()
+        if earliest is not None:
+            return earliest
+        latch = OxScheduleTick.objects.using(self._db_alias).create(
+            schedule_name=key,
+            scheduled_for=_latch_instant(),
+            task_id=None,
+            created_at=now,
+        )
+        others = others.exclude(pk=latch.pk)
+        features = connections[self._db_alias].features
+        if features.has_select_for_update:
+            others = others.select_for_update(
+                skip_locked=features.has_select_for_update_skip_locked
+            )
+        earliest = others.first()
+        OxScheduleTick.objects.using(self._db_alias).filter(pk=latch.pk).delete()
+        return earliest
+
+    def _log_tick_dropped(
+        self, schedule: Schedule, scheduled_for: datetime, now: datetime
+    ) -> None:
+        """
+        Record a tick the starting deadline dropped.
+
+        A dropped tick is a decision, not an absence, so it is logged with
+        its lateness and can be alerted on. Once per tick per worker: the
+        same tick stays droppable until the next one comes due, and an
+        alertable event that repeats once a second is an alert nobody can
+        act on.
+        """
+        if self._dropped_reported.get(schedule.key) == scheduled_for:
+            return
+        self._dropped_reported[schedule.key] = scheduled_for
+        late = (now - scheduled_for).total_seconds()
+        logger.warning(
+            "Dropped schedule %s tick %s: %.0fs late, past its starting deadline",
+            schedule.name,
+            scheduled_for.isoformat(),
+            late,
+            extra={
+                "event": "schedule_tick_dropped",
+                "schedule": schedule.name,
+                "scheduled_for": scheduled_for.isoformat(),
+                "late_seconds": late,
+                "worker_id": self.worker_id,
+            },
+        )
+
+    def _still_due(
+        self,
+        current: Schedule,
+        scheduled_for: datetime,
+        local_now: datetime,
+        now: datetime,
+    ) -> bool:
+        """
+        Does this schedule, as it stands now, still want this exact tick?
+
+        Recomputed rather than re-checked column by column. A retimed
+        schedule answers a different instant, a moved boundary excludes it,
+        a tightened deadline drops it, and a schedule whose timing was
+        changed by a route that touches no model code is caught the same
+        way as one changed through the admin, because the answer comes from
+        the columns rather than from anything a write path remembered to
+        update.
+
+        `local_now` is the snapshot the tick was derived from, so the tick
+        recomputed here is the one the caller holds. `now` is the clock as
+        it stands when the question is asked, which under the row's lock is
+        later than the snapshot by however long the lock took; the deadline
+        is judged against that.
+        """
+        tick = current.trigger.previous(local_now)
+        if tick is None:
+            return False
+        due = timezone.make_aware(tick) if settings.USE_TZ else tick
+        if due != scheduled_for:
+            return False
+        if current.start_time is not None and scheduled_for < current.start_time:
+            return False
+        if current.end_time is not None and scheduled_for > current.end_time:
+            return False
+        return not (
+            current.starting_deadline is not None
+            and now - scheduled_for > current.starting_deadline
+        )
 
     def dispatch_schedules(self) -> int:
         """
@@ -2058,7 +2262,8 @@ class Worker:
         at its current tick without firing, so it first fires at the next
         tick after deployment rather than for a time before it existed.
         """
-        if not self.schedules:
+        schedules = self._schedule_source.schedules()
+        if not schedules:
             return 0
         now = timezone.now()
         # Cron fields describe wall-clock time in the project's timezone.
@@ -2067,15 +2272,39 @@ class Worker:
         )
         # Every schedule's due tick first, so the tick log is read once and
         # only as far back as the oldest of them.
-        due: dict[str, datetime] = {}
-        for schedule in self.schedules:
-            tick = schedule.cron.previous(local_now)
-            due[schedule.name] = timezone.make_aware(tick) if settings.USE_TZ else tick
-        latest = self._latest_ticks(min(due.values()))
+        due: list[tuple[Schedule, datetime]] = []
+        for schedule in schedules:
+            tick = schedule.trigger.previous(local_now)
+            if tick is None:
+                # A one-shot trigger whose instant has not arrived. Nothing
+                # is due and nothing is recorded, so it stays a candidate.
+                continue
+            scheduled_for = timezone.make_aware(tick) if settings.USE_TZ else tick
+            if scheduled_for > now:
+                # A tick is the latest instant at or before now, so one in
+                # the future is not due and must not be enqueued. It can
+                # arise where a local time does not exist: on the day a
+                # zone springs forward, a wall clock of 02:30 in a
+                # one-hour-past-the-hour sequence is a time that never
+                # happens, and attaching the zone to it resolves to 03:30,
+                # which has not arrived. Enqueueing there would run the
+                # task early and stamp it with an instant that suppresses
+                # the real 03:30 tick when it comes.
+                continue
+            due.append((schedule, scheduled_for))
+        if not due:
+            return 0
+        latest = self._latest_ticks(
+            schedules, min(scheduled_for for _, scheduled_for in due)
+        )
         dispatched = 0
-        for schedule in self.schedules:
-            scheduled_for = due[schedule.name]
-            last = latest.get(schedule.name)
+        for schedule, scheduled_for in due:
+            if schedule.start_time is not None and scheduled_for < schedule.start_time:
+                # Before the schedule existed, or before it was retimed.
+                continue
+            if schedule.end_time is not None and scheduled_for > schedule.end_time:
+                continue
+            last = latest.get(schedule.key)
             if last is not None and scheduled_for <= last:
                 if last <= now:
                     continue
@@ -2089,62 +2318,249 @@ class Worker:
                 # one. In ordinary operation the comparison above answers.
                 if (
                     OxScheduleTick.objects.using(self._db_alias)
-                    .filter(schedule_name=schedule.name, scheduled_for=scheduled_for)
+                    .filter(schedule_name=schedule.key, scheduled_for=scheduled_for)
                     .exists()
                 ):
                     continue
+            # After the suppression, not before. A tick that already fired
+            # is not a tick that was dropped, and checking the deadline
+            # first would report one as dropped on every pass until its
+            # next tick came due, which for a daily schedule is a warning
+            # a second for a day.
+            if schedule.starting_deadline is not None and (
+                now - scheduled_for > schedule.starting_deadline
+            ):
+                self._log_tick_dropped(schedule, scheduled_for, now)
+                continue
+            result = None
+            # Set once this pass's tick row is in. An IntegrityError arriving
+            # with it clear is the INSERT losing the constraint; with it set,
+            # a later statement's.
+            claimed = False
+            # Set by the first transaction.on_commit callback of the block,
+            # registered before anything a task_enqueued receiver can add.
+            # Django runs the callbacks in order once the commit is through,
+            # and does not guard them, so an exception arriving with this
+            # set was raised by a receiver's callback after the transaction
+            # committed, whatever its class. One arriving with it clear came
+            # before the commit or from the commit itself, and the handlers
+            # below read its class. A flag set at the end of the body could
+            # not tell those apart: a commit that fails has run the whole
+            # body too.
+            committed = False
+
+            def mark_committed() -> None:
+                nonlocal committed
+                committed = True
+
             try:
-                with transaction.atomic(using=self._db_alias):
-                    result = None
-                    # The tick row goes in first, before anything is
-                    # enqueued. Every worker derives the same tick times, so
-                    # on every tick all of them reach this line and exactly
-                    # one INSERT survives the unique constraint. Claiming the
-                    # instant before doing the work means the losers do no
-                    # work: they raise here and enqueue nothing.
-                    #
-                    # enqueue() saves and fires task_enqueued before any outer
-                    # rollback could unwind it, which is why the constraint
-                    # has to decide before the enqueue and not after.
-                    tick_row = OxScheduleTick.objects.using(self._db_alias).create(
-                        schedule_name=schedule.name,
-                        scheduled_for=scheduled_for,
-                        task_id=None,
-                        created_at=now,
-                    )
-                    # Whether this is the first sighting is decided here,
-                    # from the log, rather than from the snapshot taken
-                    # before the loop. Another worker can commit this
-                    # schedule's anchor in between, and then this pass is
-                    # not the first sighting at all: anchoring again writes
-                    # a second no-task row, this time over a tick that had a
-                    # boundary and should have fired. The constraint then
-                    # holds that instant for good, and the run it was for
-                    # never happens.
-                    #
-                    # The row inserted above is excluded: it is this pass's
-                    # own tick, visible inside this transaction, and counting
-                    # it would make every schedule look like it already had
-                    # history.
-                    #
-                    # One extra query, and only while a schedule has no
-                    # ticks at all. Once it has one, `last` is set and this
-                    # never runs again.
-                    first_sighting = last is None and not (
-                        OxScheduleTick.objects.using(self._db_alias)
-                        .filter(schedule_name=schedule.name)
-                        .exclude(pk=tick_row.pk)
-                        .exists()
-                    )
-                    if not first_sighting:
-                        result = schedule.task.enqueue(
-                            *schedule.args, **schedule.kwargs
+                try:
+                    with transaction.atomic(using=self._db_alias):
+                        transaction.on_commit(mark_committed, using=self._db_alias)
+                        # The definition as it stands now, under its own lock.
+                        # Everything above this line was a filter over a snapshot
+                        # that may be minutes old; everything below decides from
+                        # the row itself.
+                        #
+                        # The lock is taken before the enqueue rather than after.
+                        # The enqueue itself is an INSERT that takes no lock on
+                        # this row, so for it there is no order to invert, and
+                        # deciding first means a refused tick commits nothing:
+                        # on PostgreSQL and MySQL it writes nothing at all, and
+                        # on SQLite the lock is itself a no-op UPDATE that the
+                        # rollback takes back. A task_enqueued receiver is
+                        # another matter:
+                        # it runs inside this transaction, under this lock, and
+                        # can take locks of its own. The documented rule for
+                        # receivers is that they take none a transaction that
+                        # writes schedules may hold, because that pair deadlocks.
+                        current = (
+                            schedule.refresh()
+                            if schedule.refresh is not None
+                            else schedule
                         )
-                        tick_row.task_id = result.id
-                        tick_row.save(using=self._db_alias, update_fields=["task"])
+                        # The clock again, now that the lock is held. Waiting
+                        # for it takes as long as whoever holds it: another
+                        # dispatcher's enqueue and its receivers, an admin save,
+                        # up to the lock-wait timeout on MySQL. The starting
+                        # deadline is a promise about how late a run may begin,
+                        # and a clock read before the wait cannot keep it. The
+                        # tick itself is still the snapshot's: which instant is
+                        # due comes from the timing, not from when the lock was
+                        # granted.
+                        admitted_at = timezone.now()
+                        if current is None or not self._still_due(
+                            current, scheduled_for, local_now, admitted_at
+                        ):
+                            raise _NotAdmitted
+                        # The tick row goes in first, before anything is
+                        # enqueued. Every worker derives the same tick times, so
+                        # on every tick all of them reach this line and exactly
+                        # one INSERT survives the unique constraint. Claiming the
+                        # instant before doing the work means the losers do no
+                        # work: they raise here and enqueue nothing.
+                        #
+                        # enqueue() saves and fires task_enqueued before any outer
+                        # rollback could unwind it, which is why the constraint
+                        # has to decide before the enqueue and not after.
+                        #
+                        # Through the alias this transaction was opened on. The
+                        # INSERT and the enqueue have to commit or roll back
+                        # together: that is what makes the constraint the
+                        # coordination mechanism. Left to its own routing this
+                        # row could land outside the transaction, and a tick
+                        # recorded without its task is a tick nothing will run
+                        # again. django_ox.E008 checks that the two models
+                        # resolve to one database.
+                        tick_row = OxScheduleTick.objects.using(self._db_alias).create(
+                            schedule_name=current.key,
+                            scheduled_for=scheduled_for,
+                            task_id=None,
+                            created_at=now,
+                        )
+                        claimed = True
+                        # A schedule that anchors records its first sighting
+                        # without firing, because first observation is the only
+                        # boundary it has. One carrying its own start_time was
+                        # given a boundary when it was created, so its first due
+                        # tick fires even if no worker saw the schedule appear.
+                        #
+                        # Whether this is the first sighting is decided here,
+                        # from the log, rather than from the snapshot taken
+                        # before the loop. Another worker can commit this
+                        # schedule's anchor in between, and then this pass is
+                        # not the first sighting at all: anchoring again writes
+                        # a second no-task row, this time over a tick that had a
+                        # boundary and should have fired. The constraint then
+                        # holds that instant for good, and the run it was for
+                        # never happens. _anchor_boundary says how two workers
+                        # holding different ticks are kept from both anchoring.
+                        #
+                        # Asked only while the bounded read found nothing for
+                        # this schedule. One whose newest tick is at or after
+                        # the bound has `last` set and skips it; one whose
+                        # newest tick predates the bound pays the one indexed
+                        # read on every dispatch, and a schedule alone in its
+                        # pass, whose bound is its own due tick, is always in
+                        # that position. It is not "only until it has a tick".
+                        first_sighting = False
+                        if last is None and current.anchors:
+                            anchor = self._anchor_boundary(
+                                current.key, tick_row.pk, now
+                            )
+                            if anchor is None:
+                                first_sighting = True
+                            elif scheduled_for < anchor:
+                                # A tick from before the schedule's anchor: this
+                                # worker's clock, or its pass, is behind the one
+                                # that saw the schedule first. The anchor is the
+                                # boundary, and nothing before it fires.
+                                raise _NotAdmitted
+                        if not first_sighting:
+                            result = current.task.enqueue(
+                                *current.args, **current.kwargs
+                            )
+                            tick_row.task_id = result.id
+                            tick_row.save(using=self._db_alias, update_fields=["task"])
+                except Exception:
+                    if not committed:
+                        raise
+                    # The transaction is committed and a
+                    # transaction.on_commit callback, registered by a
+                    # task_enqueued receiver, raised. Read by its class it
+                    # would count as a lost race, contention, or a database
+                    # fault that ends the pass, and a task that exists would
+                    # go uncounted. The task exists and the tick is
+                    # recorded, so the dispatch stands and the callback's
+                    # failure is its own event.
+                    logger.warning(
+                        "Schedule %s dispatched, then a post-commit callback failed",
+                        schedule.name,
+                        exc_info=True,
+                        extra={
+                            "event": "schedule_dispatch_callback_failed",
+                            "schedule": schedule.name,
+                            "task_id": str(result.id) if result is not None else None,
+                            "worker_id": self.worker_id,
+                        },
+                    )
+            except _NotAdmitted:
+                # The schedule changed between the read and now (disabled,
+                # retimed, or gone), or the tick predates its anchor. The
+                # rollback took the tick row with it, and the tick stays
+                # unclaimed so a worker with a current view can still act
+                # on it.
+                continue
             except IntegrityError:
-                # Another worker claimed this tick first; its INSERT won and
-                # ours rolled back before it enqueued anything.
+                # Two things raise this inside the block, told apart by how
+                # far the block had got. Before the tick row is in, it is the
+                # INSERT itself: another worker claimed this tick first, its
+                # INSERT won, and ours rolled back before it enqueued
+                # anything. Silent, and the ordinary case on every tick with
+                # more than one worker. Once the row is in, the failure is a
+                # later statement's, the enqueue's or the latch's, and
+                # reading it as a lost race would retry it silently for as
+                # long as it kept failing. Asking the log whether the tick
+                # row exists cannot tell them apart: a winner committing
+                # between the rollback and that read made a real failure
+                # look like a lost race.
+                if claimed:
+                    logger.exception(
+                        "Schedule %s could not be dispatched this pass",
+                        schedule.name,
+                        extra={
+                            "event": "schedule_dispatch_error",
+                            "schedule": schedule.name,
+                            "worker_id": self.worker_id,
+                        },
+                    )
+                continue
+            except OperationalError as exc:
+                # The database gave up waiting for a lock: another worker
+                # held this tick's unique row, or the schedule's row, for
+                # longer than the engine's patience. That is a lost race
+                # with a slow winner, not a broken schedule, so it is one
+                # warning without a traceback, and the tick fires on a later
+                # pass if it is still unclaimed. The stored source treats a
+                # timeout on its own row lock the same way.
+                if not lock_contention(exc):
+                    raise
+                logger.warning(
+                    "Could not claim schedule %s this pass, the database gave up "
+                    "waiting for a lock: %s",
+                    schedule.name,
+                    exc,
+                    extra={
+                        "event": "schedule_lock_unavailable",
+                        "schedule": schedule.name,
+                        "worker_id": self.worker_id,
+                    },
+                )
+                continue
+            except DatabaseError:
+                # The database, not the schedule: a connection gone away, a
+                # server refusing a statement, a lock the engine gave up
+                # waiting for. Read as one bad row, it was logged against
+                # whichever schedule was in hand, with a traceback, once per
+                # schedule, while the pass returned as if it had succeeded
+                # and the handler in run() written for exactly this never
+                # ran. It goes there instead.
+                raise
+            except Exception:
+                # Anything else at all. A schedule read from a row is
+                # input from a person, and the guarantee that one bad
+                # row cannot stop the others has to hold for the
+                # exception nobody predicted as much as for the ones
+                # that were.
+                logger.exception(
+                    "Schedule %s could not be dispatched this pass",
+                    schedule.name,
+                    extra={
+                        "event": "schedule_dispatch_error",
+                        "schedule": schedule.name,
+                        "worker_id": self.worker_id,
+                    },
+                )
                 continue
             if result is not None:
                 dispatched += 1
@@ -2280,11 +2696,35 @@ class Worker:
                     if time.monotonic() - last_reap >= self.reap_interval:
                         self.reap()
                         last_reap = time.monotonic()
-                    if (
-                        self.schedules
-                        and time.monotonic() - last_dispatch >= self.schedule_interval
-                    ):
-                        self.dispatch_schedules()
+                    # Not gated on a schedule list read at start-up: a source
+                    # whose answer changes would never be asked again after
+                    # starting empty. dispatch_schedules() asks the source and
+                    # returns immediately when it has nothing, which for the
+                    # default settings source is one list check.
+                    if time.monotonic() - last_dispatch >= self.schedule_interval:
+                        try:
+                            self.dispatch_schedules()
+                        except DatabaseError:
+                            # Any statement in the pass can raise this: the
+                            # bounded tick read, a row lock, the tick INSERT,
+                            # the enqueue. The cause is the database rather
+                            # than a schedule, so the loop lets it out
+                            # instead of logging it against whichever
+                            # schedule was in hand. A pass lost this way is
+                            # recoverable at the next one, and the claim
+                            # below still runs this pass. A connection that
+                            # is no longer usable is dropped first, so the
+                            # claim reconnects rather than failing on it too
+                            # and costing the whole poll pass.
+                            logger.warning(
+                                "Schedule dispatch failed; retrying next pass",
+                                exc_info=True,
+                                extra={
+                                    "event": "schedule_dispatch_failed",
+                                    "worker_id": self.worker_id,
+                                },
+                            )
+                            close_old_connections()
                         last_dispatch = time.monotonic()
                     in_flight = {f for f in in_flight if not f.done()}
                     claimed_any = False

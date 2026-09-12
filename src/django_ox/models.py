@@ -159,3 +159,116 @@ class OxScheduleTick(models.Model):
 
     def __str__(self) -> str:
         return f"{self.schedule_name} @ {self.scheduled_for:%Y-%m-%d %H:%M}"
+
+
+class OxSchedule(models.Model):
+    """
+    A recurring schedule stored as a row, so it can be changed without a
+    deploy.
+
+    Settings-declared schedules stay the default and are unaffected by this
+    table. What a row adds is the ability to create, retime, pause and
+    delete a schedule at runtime, and what it costs is that the row is
+    input from a person rather than from a deployment. Two columns carry
+    the whole of that cost.
+
+    **task_key names a registry key, never an import path.** Code decides
+    what the key resolves to (see django_ox.registry), so holding the
+    change permission on this table does not become permission to run any
+    importable callable with arguments of your choosing.
+
+    **start_time is the activation boundary**: a tick fires only if it is
+    at or after it. It is written when the row is created, by the creator,
+    in the creating transaction. That is the difference from the anchor row
+    a settings-declared schedule gets, which is written when a worker first
+    *observes* the schedule: a row created at 12:00 and first due at 12:05
+    would lose that run if every worker were down until 12:06. Both
+    mechanisms answer the same question, and they differ because a row has
+    a creation event to hang the answer on and a settings entry does not.
+
+    **Retiming moves the boundary.** Change a cron from 02:00 to 03:00 at
+    15:00 and the tick function starts answering 03:00 today, an instant
+    that already passed and that nothing scheduled while it was in the
+    future. update_schedule moves start_time when the timing columns
+    change, so it does not fire.
+
+    A write that goes around update_schedule leaves the boundary where it
+    was, and `boundary_for` is what catches that: it records the timing the
+    boundary was set for, and dispatch compares it against the row's timing
+    now. When they differ the boundary is stale, this tick belonged to the
+    old definition and is not fired, and the boundary is moved forward so
+    the schedule resumes on its new timing.
+    """
+
+    class Trigger(models.TextChoices):
+        CRON = "cron", "Cron expression"
+        INTERVAL = "interval", "Fixed interval"
+
+    name = models.CharField(max_length=128, unique=True)
+    task_key = models.CharField(max_length=128)
+    trigger = models.CharField(max_length=16, choices=Trigger.choices)
+    cron = models.CharField(max_length=128, blank=True, default="")
+    every_seconds = models.PositiveIntegerField(null=True, blank=True)
+    phase_seconds = models.PositiveIntegerField(default=0)
+    arguments = models.JSONField(default=dict, blank=True)
+    enabled = models.BooleanField(default=True)
+    start_time = models.DateTimeField()
+    #: A digest of the timing columns and `enabled` as they were when
+    #: start_time was last written. Dispatch and the periodic read recompute
+    #: it from the row and compare, so a retime or a pause made by a route
+    #: that runs no model code, a bulk update or a fixture, is still noticed
+    #: at the next read. django_ox.stored says what that can and cannot see.
+    #: Written there, never by hand.
+    boundary_for = models.CharField(max_length=64, blank=True, default="")
+    #: How many times this package has written the activation boundary.
+    #: A worker that found the boundary stale heals it on a later pass and
+    #: records this count with the sighting, so a second worker holding
+    #: the same sighting can tell that the first one's heal superseded it.
+    #: The columns alone cannot say so: a heal writes `start_time=now`,
+    #: and `now` need not differ from the start time the sighting saw.
+    #: Written by django_ox.stored, never by hand.
+    boundary_generation = models.PositiveIntegerField(default=0)
+    end_time = models.DateTimeField(null=True, blank=True)
+    starting_deadline_seconds = models.PositiveIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(trigger="cron", every_seconds__isnull=True)
+                | models.Q(trigger="interval", cron="", every_seconds__isnull=False),
+                name="ox_schedule_one_trigger",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def clean(self) -> None:
+        """
+        Validate through the same rules the service functions use.
+
+        The admin calls this for free, through ModelForm._post_clean.
+        save() does not, which is why it is not the only caller.
+        """
+        from .stored import validate_schedule
+
+        validate_schedule(self)
+
+
+class OxScheduleChange(models.Model):
+    """
+    One row, bumped whenever a stored schedule changes.
+
+    A worker reading schedules from the database needs to know whether to
+    re-read them, and asking that question has to be cheaper than the
+    answer: this is one indexed read of one row per dispatch pass, against
+    a table that holds a single row forever.
+    """
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+    changed_at = models.DateTimeField()
+
+    def __str__(self) -> str:
+        return f"schedules changed at {self.changed_at:%Y-%m-%d %H:%M:%S}"
