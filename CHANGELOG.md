@@ -87,7 +87,9 @@ for your engine.
   retime or a pause made with a bulk `update()` is noticed too, at the next
   read, and the boundary moves to that read: the worker remembers the
   boundary it found the row stale against, so a row re-enabled the same way
-  before the move is written still gets it. However many workers find the row
+  before the move is written still gets it. It keeps that memory until the
+  move commits, so a dispatch pass run inside a transaction the caller rolls
+  back has forgotten nothing by its next one. However many workers find the row
   stale together, only the first of them moves the boundary: the row counts
   its boundary writes and each worker records the count it saw, because a heal
   writes the boundary to its own clock, and writing it is not the same as

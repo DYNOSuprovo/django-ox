@@ -515,12 +515,13 @@ class DatabaseScheduleSource:
         copy still holds the old timing has nothing else to tell it to
         re-read, and would go on proposing ticks the row no longer wants.
         """
-        pending, self._needs_heal = self._needs_heal, {}
-        for pk, observed in pending.items():
+        for pk, observed in list(self._needs_heal.items()):
             try:
                 with transaction.atomic(using=self._db_alias):
                     row = _lock_row(pk, self._db_alias)
                     if row is None:
+                        # The row is gone, so there is no boundary to move.
+                        self._settled(pk)
                         continue
                     # After the lock, per row. The boundary is the moment
                     # the change was found, and a wait for the lock is
@@ -550,6 +551,7 @@ class DatabaseScheduleSource:
                         # over a correction, and a coarse clock puts the
                         # write and the heal in one granule. The count
                         # moves whatever the clock does.
+                        self._settled(pk)
                         continue
                     # Whether or not the digest matches by now. The row was
                     # seen in a state its boundary was not set for, and
@@ -565,11 +567,7 @@ class DatabaseScheduleSource:
                         boundary_generation=F("boundary_generation") + 1,
                     )
                     _touch_change_row(self._db_alias)
-                logger.info(
-                    "Moved schedule %s to a boundary matching its timing",
-                    pk,
-                    extra={"event": "schedule_boundary_healed", "schedule_pk": pk},
-                )
+                    self._settled(pk, healed=True)
             except DatabaseError:
                 logger.warning(
                     "Could not move schedule %s onto its current timing",
@@ -577,7 +575,38 @@ class DatabaseScheduleSource:
                     exc_info=True,
                     extra={"event": "schedule_boundary_heal_failed"},
                 )
-                self._needs_heal[pk] = observed
+
+    def _settled(self, pk: int, *, healed: bool = False) -> None:
+        """
+        Forget a sighting, once the transaction that settled it commits.
+
+        A sighting is the only record that the row was met in a state its
+        boundary was not set for; the row itself keeps no trace of having
+        been seen. `dispatch_schedules()` may be called inside a
+        transaction the caller owns, and everything this pass decided goes
+        back with that transaction if it rolls back: the boundary the heal
+        wrote, and equally the read that said another writer owns the
+        boundary or that the row is gone. Dropping the sighting there
+        would leave nothing to re-heal the row, and a raw resume restores
+        the digest, so no later read finds it stale again and the tick
+        that came due inside the pause fires.
+
+        Deferring covers the ordinary pass with the same mechanism rather
+        than a second one: outside a transaction the heal's own `atomic`
+        is the outermost, so the callback runs as it exits and the
+        sighting is gone before this method returns.
+        """
+
+        def forget() -> None:
+            self._needs_heal.pop(pk, None)
+            if healed:
+                logger.info(
+                    "Moved schedule %s to a boundary matching its timing",
+                    pk,
+                    extra={"event": "schedule_boundary_healed", "schedule_pk": pk},
+                )
+
+        transaction.on_commit(forget, using=self._db_alias)
 
     def _build(self) -> list[Any]:
         built = []

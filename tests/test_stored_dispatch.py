@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 from django import forms
+from django.db import transaction
 from django.utils import timezone
 
 from django_ox.models import OxSchedule, OxScheduleTick, OxTask
@@ -691,7 +692,10 @@ class TestTheBoundaryMustMatchTheTiming:
         OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
         at(75)
         assert worker.dispatch_schedules() == 0, "the heal pass; not a full read"
-        assert not source._needs_heal
+        # The sighting is dropped when the heal commits, and the transaction
+        # this test runs in never does. What the heal wrote is what matters
+        # here; the queue emptying is covered against real commits in
+        # TestASightingOutlivesARollbackOfTheCallersTransaction.
         row.refresh_from_db()
         assert row.start_time == base + timedelta(seconds=75), (
             "the heal was cancelled by the resume restoring the digest"
@@ -884,6 +888,186 @@ class TestTheBoundaryMustMatchTheTiming:
         update_schedule(row, enabled=False)
         update_schedule(row, enabled=True)
         assert worker.dispatch_schedules() == 0
+
+
+class TestASightingOutlivesARollbackOfTheCallersTransaction:
+    """
+    A sighting is the only record that a row was met in a state its
+    boundary was not set for, and the row itself keeps no trace of having
+    been seen. `dispatch_schedules()` may be called inside a transaction
+    the caller owns, and a heal written in one is undone when that
+    transaction rolls back. Forgetting the sighting at the moment the
+    heal is written would leave nothing to re-heal it: a raw resume puts
+    the digest back, so no later read finds the row stale again, and the
+    tick that came due inside the pause fires.
+
+    Real commits, so the two outcomes are distinguishable at all: under a
+    test transaction that never commits, every heal looks rolled back.
+    """
+
+    def _clock(self, monkeypatch):
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(second=0, microsecond=0)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        return base, at
+
+    def _fired(self, base):
+        return sorted(
+            (t - base).total_seconds()
+            for t in OxScheduleTick.objects.exclude(task_id=None).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+
+    @pytest.mark.django_db(transaction=True)
+    def test_a_rolled_back_heal_keeps_the_sighting_and_the_pause_holds(
+        self, worker, monkeypatch
+    ):
+        base, at = self._clock(monkeypatch)
+        source = worker._schedule_source
+        at(5)
+        row = create_schedule(
+            name="minutely", task_key="report", trigger="cron", cron="* * * * *"
+        )
+        at(10)
+        assert worker.dispatch_schedules() == 0, "T is before the boundary"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0, "refused under the lock"
+        assert row.pk in source._needs_heal, "the pause seen at dispatch was not kept"
+        at(75)
+        with pytest.raises(RuntimeError), transaction.atomic():
+            worker.dispatch_schedules()
+            raise RuntimeError("the caller rolls back")
+        row.refresh_from_db()
+        assert (row.start_time, row.boundary_generation) == (
+            base + timedelta(seconds=5),
+            0,
+        ), "the rollback did not undo the heal, so the test proves nothing"
+        assert row.pk in source._needs_heal, (
+            "the sighting was dropped by a heal the caller's rollback undid"
+        )
+        at(80)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
+        source._reconcile_interval = 0  # the next call is a full read
+        at(90)
+        assert worker.dispatch_schedules() == 0
+        row.refresh_from_db()
+        assert row.start_time == base + timedelta(seconds=90), (
+            "nothing re-healed the row after the rollback"
+        )
+        at(95)
+        assert worker.dispatch_schedules() == 0
+        assert self._fired(base) == [], (
+            "a tick from inside the pause fired after the rollback"
+        )
+
+    @pytest.mark.django_db(transaction=True)
+    def test_a_committed_heal_still_forgets_the_sighting(self, worker, monkeypatch):
+        # The other direction, so "never forget" is not a fix. A heal that
+        # commits inside a caller's transaction is as done as one in
+        # autocommit, and re-locking the row on every later pass would be
+        # a query per schedule per second forever.
+        base, at = self._clock(monkeypatch)
+        source = worker._schedule_source
+        at(5)
+        row = create_schedule(
+            name="minutely", task_key="report", trigger="cron", cron="* * * * *"
+        )
+        at(10)
+        # A pass before the pause, so the row is in the snapshot and the
+        # pause is met under the lock at dispatch rather than by a read.
+        assert worker.dispatch_schedules() == 0, "T is before the boundary"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0, "refused under the lock"
+        assert row.pk in source._needs_heal
+        at(75)
+        with transaction.atomic():
+            worker.dispatch_schedules()
+        assert not source._needs_heal, "a committed heal left the sighting queued"
+        row.refresh_from_db()
+        assert (row.start_time, row.boundary_generation) == (
+            base + timedelta(seconds=75),
+            1,
+        )
+
+    @pytest.mark.django_db(transaction=True)
+    def test_an_autocommit_heal_forgets_the_sighting_in_the_same_pass(
+        self, worker, monkeypatch
+    ):
+        # No caller transaction at all: the ordinary worker pass, which must
+        # not start carrying a sighting into the next one.
+        base, at = self._clock(monkeypatch)
+        source = worker._schedule_source
+        at(5)
+        row = create_schedule(
+            name="minutely", task_key="report", trigger="cron", cron="* * * * *"
+        )
+        at(10)
+        # A pass before the pause, so the row is in the snapshot and the
+        # pause is met under the lock at dispatch rather than by a read.
+        assert worker.dispatch_schedules() == 0, "T is before the boundary"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0
+        assert row.pk in source._needs_heal
+        at(75)
+        assert worker.dispatch_schedules() == 0
+        assert not source._needs_heal, "the heal left the sighting queued"
+        row.refresh_from_db()
+        assert row.start_time == base + timedelta(seconds=75)
+
+    @pytest.mark.django_db(transaction=True)
+    def test_a_sighting_nothing_is_left_to_heal_is_forgotten_too(
+        self, worker, monkeypatch
+    ):
+        # The two passes that write nothing: another writer owns the
+        # boundary now, and the row is gone. Neither is a reason to carry
+        # the sighting into every later pass and take the row's lock again.
+        base, at = self._clock(monkeypatch)
+        second = Worker(backoff_initial=0)
+        at(5)
+        row = create_schedule(
+            name="minutely", task_key="report", trigger="cron", cron="* * * * *"
+        )
+        gone = create_schedule(
+            name="doomed", task_key="report", trigger="cron", cron="* * * * *"
+        )
+        at(10)
+        assert worker.dispatch_schedules() == 0, "T is before the boundary"
+        at(11)
+        assert second.dispatch_schedules() == 0, "T is before the boundary"
+        at(30)
+        OxSchedule.objects.filter(pk__in=[row.pk, gone.pk]).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0
+        at(71)
+        assert second.dispatch_schedules() == 0
+        assert row.pk in second._schedule_source._needs_heal
+        assert gone.pk in second._schedule_source._needs_heal
+        at(75)
+        assert worker.dispatch_schedules() == 0, "this worker's heal wins"
+        OxSchedule.objects.filter(pk=gone.pk).delete()
+        at(80)
+        assert second.dispatch_schedules() == 0
+        assert not second._schedule_source._needs_heal, (
+            "a sighting with nothing left to heal was carried forward"
+        )
+        row.refresh_from_db()
+        assert (row.start_time, row.boundary_generation) == (
+            base + timedelta(seconds=75),
+            1,
+        ), "the fenced heal moved a boundary that was not its to move"
 
 
 class TestTheBoundaryIsTimedUnderTheLock:
