@@ -164,7 +164,9 @@ TASKS = {
 - Schedules can live in the database instead, editable in the admin. Set
   `OPTIONS["SCHEDULE_SOURCE"]` to `"django_ox.stored.DatabaseScheduleSource"`.
   A row names a key registered with `@schedulable`, never an import path, so
-  admin access does not become permission to run arbitrary code. Write rows
+  admin access does not become permission to run arbitrary code. The decorator
+  takes effect only when its module is imported, and django-ox imports each
+  installed app's `tasks` module. Write rows
   with `django_ox.stored.create_schedule` and `update_schedule`, not
   `objects.create()`: `save()` runs no validation and leaves the activation
   boundary stale. Retiming a stored schedule reschedules it from the moment of

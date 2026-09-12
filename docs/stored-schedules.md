@@ -29,6 +29,11 @@ from django_ox.registry import schedulable
 def daily_report(): ...
 ```
 
+`@schedulable` only takes effect when the module it sits in is imported.
+django-ox imports each installed app's `tasks` module and nothing else, so a
+decorator in `myapp/jobs.py` registers nothing until something else imports
+that module. Put it in `myapp/tasks.py`.
+
 Or declare them in settings, which is the only channel `manage.py check` can
 validate:
 
