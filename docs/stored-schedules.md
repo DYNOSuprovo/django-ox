@@ -142,9 +142,10 @@ The same rule covers stranger cases. Retimed from 02:00 to 16:00 at 15:00, it
 runs at 16:00 today, an hour later, because that tick is still ahead of the
 change.
 
-Changing what a schedule *runs* does not change *when* it runs. Editing its arguments leaves the boundary alone. This matters: if
-every edit re-anchored the schedule, one edited more often than its own period
-would never run at all.
+Changing what a schedule *runs* does not change *when* it runs. Editing its
+arguments leaves the boundary alone. This matters: if every edit re-anchored
+the schedule, one edited more often than its own period would never run at
+all.
 
 A task already enqueued keeps the arguments it was enqueued with. Edits apply to
 the next tick.
@@ -155,10 +156,13 @@ Disable a schedule and it stops. Enable it again and it resumes from now.
 Anything that came due while it was disabled does not run.
 
 That is deliberate, and it differs from some systems you may know. Kubernetes
-documents that unsuspending a CronJob with no starting deadline schedules what
-was missed, and Quartz applies its misfire instruction on resume, which for a
-cron trigger fires once by default. Temporal does the same as django-ox here
-and tells you to backfill deliberately if you wanted those runs.
+documents that when a CronJob with no starting deadline is unsuspended, "the
+missed Jobs are scheduled immediately" [^k8s-suspend]. Quartz applies a
+trigger's misfire instruction when the trigger is resumed [^quartz-resume],
+and for a cron trigger the default instruction is to fire once, now
+[^quartz-cron]. Temporal is closer to django-ox: while a schedule is paused its
+spec "has no effect", and the runs a pause missed are something you ask for
+with a backfill [^temporal-pause].
 
 The point of pausing is that things stop. A resume that fires everything you
 paused through fails at the same moment, one step later.
@@ -345,3 +349,8 @@ The events worth alerting on. The full set, with every field, is on the
 
 `schedule_row_skipped` is the one to alert on. It usually means a task key was
 removed from the code while a row still names it.
+
+[^k8s-suspend]: Kubernetes, "CronJob", under "Schedule suspension": "When `.spec.suspend` changes from `true` to `false` on an existing CronJob without a starting deadline, the missed Jobs are scheduled immediately." <https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#schedule-suspension>, checked 2026-09-12.
+[^quartz-resume]: Quartz 2.3.0 API, `Scheduler.resumeTrigger`: "If the `Trigger` missed one or more fire-times, then the `Trigger`'s misfire instruction will be applied." The same sentence is on `resumeJob`, `resumeTriggers` and `resumeAll`. <https://www.quartz-scheduler.org/api/2.3.0/org/quartz/Scheduler.html>, checked 2026-09-12.
+[^quartz-cron]: Quartz 2.3.0 tutorial, lesson 6, "CronTrigger Misfire Instructions": the smart policy "is also the default for all trigger types" and "is interpreted by CronTrigger as MISFIRE_INSTRUCTION_FIRE_NOW". The `CronTrigger` API names that constant `MISFIRE_INSTRUCTION_FIRE_ONCE_NOW`: "upon a mis-fire situation, the CronTrigger wants to be fired now by Scheduler." <https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/tutorial-lesson-06.html>, checked 2026-09-12.
+[^temporal-pause]: Temporal, "Schedules": "When a Schedule is Paused, the Spec has no effect", and under "Backfill": "You might use this to fill in runs from a time period when the Schedule was paused due to an external condition that's now resolved". <https://docs.temporal.io/schedule>, checked 2026-09-12.

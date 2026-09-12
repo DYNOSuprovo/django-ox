@@ -60,7 +60,7 @@
     "A stored schedule row names a key exposed in code with @schedulable or OPTIONS[\"SCHEDULABLE_TASKS\"], never an import path, so admin change permission does not become permission to run any importable callable.",
     "Write stored schedules with django_ox.stored.create_schedule and update_schedule, not OxSchedule.objects.create(): Django save() does not call full_clean(), so a direct write skips validation and leaves the activation boundary stale.",
     "A stored schedule carries start_time as its activation boundary, set when the row is created. Retiming it reschedules from the moment of the change rather than firing a tick that already passed under the old timing.",
-    "Re-enabling a paused stored schedule does not replay the ticks it missed. There is no backfill. This differs from Kubernetes CronJobs and from Quartz, both of which fire on resume.",
+    "Re-enabling a paused stored schedule does not replay the ticks it missed; there is no backfill. Kubernetes schedules a CronJob's missed Jobs on unsuspend when no starting deadline is set, and Quartz applies the misfire instruction on resume.",
     "starting_deadline_seconds on a stored schedule drops a tick later than that rather than running it however stale, and logs schedule_tick_dropped with its lateness. The default is no deadline.",
     "A recurring tick enqueues an ordinary task, so execution stays at-least-once: a tick enqueued once can still run more than once and should be idempotent.",
     "After an outage only the most recent missed tick is enqueued and older ones are skipped, and a new schedule never fires for a time before it existed, so some cron occurrences are deliberately never enqueued.",

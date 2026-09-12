@@ -74,8 +74,9 @@ coming back. The mechanics, and the one case to know about, are in
   away from live slow ones.
 - Graceful drain on SIGTERM: in-flight tasks finish before the worker exits.
 - Priorities (-100 to 100) and deferred tasks (`run_after`).
-- [Recurring tasks](recurring-tasks.md): cron schedules declared in
-  settings, no separate scheduler process.
+- [Recurring tasks](recurring-tasks.md): cron or fixed-interval schedules
+  declared in settings, or [rows edited in the Django admin](stored-schedules.md);
+  every worker dispatches, so there is no separate scheduler process.
 - A result store: status, return value and errors readable through the
   standard `django.tasks` result API.
 - A [prune command](configuration.md#ox_prune) to keep the table small.
@@ -163,7 +164,9 @@ That is the whole integration. Next steps:
 
 - [Configuration](configuration.md) for every setting, option and command
   flag.
-- [Recurring tasks](recurring-tasks.md) for cron schedules.
+- [Recurring tasks](recurring-tasks.md) for cron and interval schedules, and
+  [Schedules in the database](stored-schedules.md) for rows edited in the
+  admin.
 - [Production](production.md) for systemd units, scaling and shutdown
   semantics.
 
