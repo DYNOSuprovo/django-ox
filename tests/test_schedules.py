@@ -860,3 +860,100 @@ class TestASecondAnchorDoesNotSwallowATick:
         monkeypatch.undo()
         assert OxScheduleTick.objects.count() == 2
         assert OxTask.objects.count() == 1
+
+
+@pytest.mark.django_db
+class TestTheTickReadFitsTheParameterLimit:
+    """
+    The pass's tick read names every schedule in one IN list, one parameter
+    per key plus the bound. SQLite before 3.32.0 refuses more than 999
+    parameters in a statement, and Django splits an IN list only where the
+    backend declares a maximum, which is Oracle. The keys are read in slices
+    of what the connection allows, and where it allows everything, in one.
+    """
+
+    def _schedules(self, count):
+        return schedules_from_options(
+            {
+                "SCHEDULES": {
+                    f"s{i:04d}": {"task": "tests.tasks.add", "cron": "* * * * *"}
+                    for i in range(count)
+                }
+            },
+            "default",
+        )
+
+    def _seed(self, schedules, at):
+        for schedule in schedules[::7]:
+            OxScheduleTick.objects.create(
+                schedule_name=schedule.key,
+                scheduled_for=at,
+                task_id=None,
+                created_at=at,
+            )
+        return {schedule.key: at for schedule in schedules[::7]}
+
+    def test_the_keys_are_read_in_slices_of_the_connections_limit(
+        self, settings, monkeypatch
+    ):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        settings.TASKS = tasks_setting({})
+        schedules = self._schedules(10)
+        at = timezone.now().replace(second=0, microsecond=0)
+        expected = self._seed(schedules, at)
+        # Four parameters per statement: three keys and the bound. On the
+        # class, because SQLite's is a property that reads the live limit.
+        monkeypatch.setattr(type(connection.features), "max_query_params", 4)
+        worker = Worker(backoff_initial=0)
+        with CaptureQueriesContext(connection) as captured:
+            latest = worker._latest_ticks(schedules, at - timedelta(days=1))
+        reads = [q for q in captured.captured_queries if "MAX(" in q["sql"].upper()]
+        assert len(reads) == 4, "ten keys in slices of three is four reads"
+        assert latest == expected
+
+    def test_a_connection_with_no_limit_reads_them_in_one(self, settings):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        settings.TASKS = tasks_setting({})
+        schedules = self._schedules(10)
+        at = timezone.now().replace(second=0, microsecond=0)
+        expected = self._seed(schedules, at)
+        limit = connection.features.max_query_params
+        assert limit is None or limit > 11, "this test wants an unconstrained read"
+        with CaptureQueriesContext(connection) as captured:
+            latest = Worker(backoff_initial=0)._latest_ticks(
+                schedules, at - timedelta(days=1)
+            )
+        reads = [q for q in captured.captured_queries if "MAX(" in q["sql"].upper()]
+        assert len(reads) == 1
+        assert latest == expected
+
+    def test_more_keys_than_sqlite_3_31_allows_are_still_read(self, settings):
+        # The real limit, set on the live connection: 999 is what SQLite
+        # before 3.32.0 has, and Django 6.0 still supports 3.31.
+        import sqlite3
+
+        from django.db import connection
+
+        if connection.vendor != "sqlite":
+            pytest.skip("SQLite's parameter limit")
+        settings.TASKS = tasks_setting({})
+        schedules = self._schedules(1200)
+        at = timezone.now().replace(second=0, microsecond=0)
+        expected = self._seed(schedules, at)
+        connection.ensure_connection()
+        raw = connection.connection
+        before = raw.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+        raw.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        try:
+            # Django reads the limit off the live connection.
+            assert connection.features.max_query_params == 999
+            latest = Worker(backoff_initial=0)._latest_ticks(
+                schedules, at - timedelta(days=1)
+            )
+        finally:
+            raw.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, before)
+        assert latest == expected

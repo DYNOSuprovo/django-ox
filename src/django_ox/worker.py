@@ -2080,17 +2080,31 @@ class Worker:
         tick in question", which is exactly what the caller does with it, and
         the caller distinguishes that from a schedule with no ticks at all by
         asking.
+
+        One parameter per key, plus the bound. SQLite before 3.32.0 refuses
+        a statement carrying more than 999, and Django splits an IN list
+        only where the backend declares a maximum, which is Oracle. So the
+        keys are read in slices of what the connection allows, and a
+        backend that declares no limit answers None and reads them in one.
         """
-        return {
-            row["schedule_name"]: row["latest"]
-            for row in OxScheduleTick.objects.using(self._db_alias)
-            .filter(
-                schedule_name__in=[schedule.key for schedule in schedules],
-                scheduled_for__gte=since,
+        keys = [schedule.key for schedule in schedules]
+        limit = connections[self._db_alias].features.max_query_params
+        step = max(limit - 1, 1) if limit else max(len(keys), 1)
+        latest: dict[str, datetime] = {}
+        for start in range(0, len(keys), step):
+            latest.update(
+                {
+                    row["schedule_name"]: row["latest"]
+                    for row in OxScheduleTick.objects.using(self._db_alias)
+                    .filter(
+                        schedule_name__in=keys[start : start + step],
+                        scheduled_for__gte=since,
+                    )
+                    .values("schedule_name")
+                    .annotate(latest=Max("scheduled_for"))
+                }
             )
-            .values("schedule_name")
-            .annotate(latest=Max("scheduled_for"))
-        }
+        return latest
 
     def _anchor_boundary(self, key: str, own_pk: int, now: datetime) -> datetime | None:
         """
