@@ -3605,7 +3605,9 @@ for your engine.
   retime or a pause made with a bulk `update()` is noticed too, at the next
   read, and the boundary moves to that read: the worker remembers the
   boundary it found the row stale against, so a row re-enabled the same way
-  before the move is written still gets it. However many workers find the row
+  before the move is written still gets it. It keeps that memory until the
+  move commits, so a dispatch pass run inside a transaction the caller rolls
+  back has forgotten nothing by its next one. However many workers find the row
   stale together, only the first of them moves the boundary: the row counts
   its boundary writes and each worker records the count it saw, because a heal
   writes the boundary to its own clock, and writing it is not the same as
@@ -3631,7 +3633,8 @@ for your engine.
   steady state is one read of one row per dispatch pass. A row that no longer
   validates is skipped and logged as `schedule_row_skipped`; the others still
   run. When the rows cannot be read at all, the worker logs
-  `schedule_source_unavailable` and keeps dispatching the set it last read.
+  `schedule_source_unavailable`, with the database's own message and no
+  traceback, and keeps dispatching the set it last read.
 - A schedule disabled, retimed or deleted after a worker read it does not
   fire. The check runs inside the dispatch transaction, under the row's own
   lock, because no polling interval is short enough to close that window. It
@@ -3641,19 +3644,42 @@ for your engine.
   nothing.
 - `django_ox.stored.create_schedule`, `update_schedule` and
   `delete_schedule`, the supported programmatic write path. They validate,
-  maintain the boundary and bump the change row. `save()` does not call
+  maintain the boundary and bump the change row. They take the fields a
+  schedule's author owns and refuse the rest with a `TypeError` naming what
+  they do take: the activation boundary, the count of writes to it and the
+  two timestamps are theirs to maintain, and a misspelled field name is
+  reported rather than set on the instance and silently not saved.
+  `create_schedule` still takes `start_time`, which is a new schedule's
+  boundary. `save()` does not call
   `full_clean()`, so a `clean()` method alone would validate what the admin
   submits and nothing that `objects.create()` writes. A valid row written
   that way still runs, with its boundary moved to the read that found it and
   logged as `schedule_boundary_healed`.
-- A Django admin for stored schedules, the first write surface this package
-  offers. The task field is a choice drawn from the registry, so it cannot
+- A Django admin for stored schedules, the first place the package lets a
+  person author a row rather than act on one a worker wrote. The task field
+  is a choice drawn from the registry, so it cannot
   express a task the code has not exposed, and the same membership check runs
-  again on the model for the write paths that build no form. Saving routes
+  again on the model for the write paths that build no form. A registry
+  entry's own `permission` comes back as an error on that field, with the
+  submission intact, rather than as a bare 403 that discards it; the
+  permission itself is enforced in `django_ox.stored` as before, on every
+  write path. Saving routes
   through `django_ox.stored`, so a schedule retimed in the admin gets its
   activation boundary moved rather than keeping one set for its old timing.
   Actions enable, disable, and run a schedule once immediately; a manual run
-  writes no tick row, so the next scheduled tick still fires.
+  writes no tick row, so the next scheduled tick still fires. It is also the
+  one way to run a paused schedule: it ignores both `enabled` and `end_time`,
+  and says how many of the schedules it ran were disabled or already ended, and
+  how many it was refused by a registry entry's own permission.
+  The changelist carries `end_time`, so a row that has ended is visible where
+  the selection is made. The backend a manual run enqueues through is found by
+  importing `OPTIONS["SCHEDULE_SOURCE"]` and testing the class, so a project's
+  own subclass of `DatabaseScheduleSource` is found whatever it is called, and
+  is the class the run builds its schedule with. The changelist and the add
+  page say so when no backend names a source at all, because until one does,
+  a schedule saved there is stored and never dispatched, with nothing else
+  to say so: no error, no log, no system check, and a manual run that
+  enqueues anyway.
 - `manage.py ox_import_beat_schedules`, which reads a `django-celery-beat`
   schedule table and prints the django-ox equivalents. It writes nothing, names
   what it could not translate and why, and says which timing will differ.
