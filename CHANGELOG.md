@@ -126,6 +126,12 @@ again. `sqlmigrate django_ox 0007` prints the statements for your engine.
   dispatch pass and owns its own freshness, which is what lets a source read
   somewhere that changes without the worker knowing. `django_ox.E006` reports
   a source that cannot be built or has no `schedules()` method.
+- A database error inside the dispatch pass ends the pass, logged once as
+  `schedule_dispatch_failed`, and a connection that is no longer usable is
+  dropped before the claim runs. It was logged against whichever schedule was
+  in hand as `schedule_dispatch_error`, with a traceback, while the pass
+  reported success. Anything else one schedule raises is still logged against
+  that schedule and the rest of the pass continues.
 
 ### Fixed
 

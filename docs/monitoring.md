@@ -254,8 +254,8 @@ The message text is not part of the contract. The keys are.
 | `schedule_dispatched` | INFO | A recurring tick enqueued its task. |
 | `schedule_tick_dropped` | WARNING | A tick was past its starting deadline and was not run. Carries `late_seconds`. Each worker reports a given tick once, not once per dispatch pass, so a schedule that stays droppable does not repeat the warning every second. |
 | `schedule_row_skipped` | WARNING | A stored schedule could not be used: its task key is not registered, its arguments no longer validate, or its timing does not parse. The others in the same pass still run. Carries `reason`. |
-| `schedule_dispatch_error` | ERROR | One schedule raised something unexpected. The rest of the pass continues. |
-| `schedule_dispatch_failed` | WARNING | The whole dispatch pass hit a database error. Retried on the next pass. |
+| `schedule_dispatch_error` | ERROR | One schedule raised something unexpected: its task would not enqueue, its row raised. The rest of the pass continues. Not a database error; those end the pass as `schedule_dispatch_failed`. |
+| `schedule_dispatch_failed` | WARNING | The dispatch pass hit a database error, wherever in the pass it was raised. The pass is abandoned and retried on the next one; a connection that is no longer usable is dropped, and the claim still runs. |
 | `schedule_source_unavailable` | WARNING | The stored schedules could not be read, so the worker is running on the set it last read rather than on none. |
 | `schedule_lock_unavailable` | WARNING | A stored schedule's row could not be locked in time, so it was skipped this pass. |
 | `schedule_boundary_healed` | INFO | A stored schedule's timing had changed without its activation boundary moving, so the boundary was moved onto the current timing. Expected after a bulk update; repeated for one schedule is not. |

@@ -2435,6 +2435,15 @@ class Worker:
                         },
                     )
                 continue
+            except DatabaseError:
+                # The database, not the schedule: a connection gone away, a
+                # server refusing a statement, a lock the engine gave up
+                # waiting for. Read as one bad row, it was logged against
+                # whichever schedule was in hand, with a traceback, once per
+                # schedule, while the pass returned as if it had succeeded
+                # and the handler in run() written for exactly this never
+                # ran. It goes there instead.
+                raise
             except Exception:
                 # Anything else at all. A schedule read from a row is input
                 # from a person, and the guarantee that one bad row cannot
@@ -2593,14 +2602,17 @@ class Worker:
                         try:
                             self.dispatch_schedules()
                         except DatabaseError:
-                            # Dispatch takes a row lock, so it can raise a
-                            # lock-wait timeout or "database is locked" as well
-                            # as the IntegrityError it handles itself. A tick
-                            # missed because the database was busy is
-                            # recoverable at the next pass, and the claim
+                            # Any statement in the pass can raise this: the
+                            # bounded tick read, a row lock, the tick INSERT,
+                            # the enqueue. The cause is the database rather
+                            # than a schedule, so the loop lets it out
+                            # instead of logging it against whichever
+                            # schedule was in hand. A pass lost this way is
+                            # recoverable at the next one, and the claim
                             # below still runs this pass. A connection that
-                            # has gone away fails the claim too, and the
-                            # handler around this block drops it and waits.
+                            # is no longer usable is dropped first, so the
+                            # claim reconnects rather than failing on it too
+                            # and costing the whole poll pass.
                             logger.warning(
                                 "Schedule dispatch failed; retrying next pass",
                                 exc_info=True,
@@ -2609,6 +2621,7 @@ class Worker:
                                     "worker_id": self.worker_id,
                                 },
                             )
+                            close_old_connections()
                         last_dispatch = time.monotonic()
                     in_flight = {f for f in in_flight if not f.done()}
                     claimed_any = False
