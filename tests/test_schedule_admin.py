@@ -312,6 +312,99 @@ class TestActions:
         assert restricted.enabled, "the restricted row must be left alone"
 
 
+class TestRunOnceNowSaysWhatItRan:
+    """
+    A manual run ignores both bounds a schedule carries: it fires a row
+    that is disabled and a row that is past its end time. That is the
+    point of it -- it is the one way to run a paused schedule -- but the
+    changelist shows paused and running rows together, an admin action has
+    no confirmation step, and the only report was a success count. An
+    operator who mis-selected a paused production schedule had nothing
+    telling them it had run.
+    """
+
+    def _run(self, client, pks):
+        return client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {
+                "action": "run_once_now",
+                "_selected_action": [str(pk) for pk in pks],
+            },
+            follow=True,
+        )
+
+    def test_a_paused_schedule_runs_and_the_report_says_so(self, client, admin_user):
+        row = a_schedule()
+        client.force_login(admin_user)
+        self._run(client, [row.pk])  # disable through the documented action
+        client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {"action": "disable_selected", "_selected_action": [str(row.pk)]},
+            follow=True,
+        )
+        row.refresh_from_db()
+        assert not row.enabled
+        response = self._run(client, [row.pk])
+        messages = [str(m) for m in response.context["messages"]]
+        assert "Enqueued 1 task(s)." in messages
+        assert (
+            "Ran 1 schedule(s) that were disabled or past their end time. "
+            "A manual run ignores both." in messages
+        )
+
+    def test_a_schedule_past_its_end_time_runs_and_the_report_says_so(
+        self, client, admin_user
+    ):
+        row = a_schedule(end_time=timezone.now() - timedelta(hours=1))
+        client.force_login(admin_user)
+        response = self._run(client, [row.pk])
+        messages = [str(m) for m in response.context["messages"]]
+        assert "Enqueued 1 task(s)." in messages
+        assert any("past their end time" in m for m in messages)
+
+    def test_a_live_schedule_draws_no_such_report(self, client, admin_user):
+        row = a_schedule(end_time=timezone.now() + timedelta(days=1))
+        client.force_login(admin_user)
+        response = self._run(client, [row.pk])
+        messages = [str(m) for m in response.context["messages"]]
+        assert "Enqueued 1 task(s)." in messages
+        assert not any("past their end time" in m for m in messages), (
+            "an ordinary run was reported as an override"
+        )
+
+    def test_only_the_rows_that_actually_ran_are_counted(self, client, admin_user):
+        # A paused row that cannot be built is skipped, not run, so counting
+        # it as an override would name a run that never happened.
+        broken = OxSchedule.objects.create(
+            name="broken",
+            task_key="report",
+            trigger="cron",
+            cron="banana",
+            enabled=False,
+            start_time=timezone.now(),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        client.force_login(admin_user)
+        response = self._run(client, [broken.pk])
+        messages = [str(m) for m in response.context["messages"]]
+        assert "Enqueued 0 task(s)." in messages
+        assert "Skipped 1 schedule(s) that cannot run as written." in messages
+        assert not any("ignores both" in m for m in messages)
+
+    def test_the_end_time_is_on_the_changelist_where_rows_are_selected(
+        self, client, admin_user
+    ):
+        a_schedule(end_time=timezone.now() - timedelta(hours=1))
+        client.force_login(admin_user)
+        body = client.get(
+            reverse("admin:django_ox_oxschedule_changelist")
+        ).content.decode()
+        assert "End time" in body, (
+            "expiry is invisible at the moment the selection is made"
+        )
+
+
 class TestReEnableThroughTheChangeForm:
     def test_the_boundary_moves(self, client, admin_user):
         # Through the form, not the action. save_model hands update_schedule

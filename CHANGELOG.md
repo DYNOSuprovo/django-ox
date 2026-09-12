@@ -143,7 +143,11 @@ for your engine.
   through `django_ox.stored`, so a schedule retimed in the admin gets its
   activation boundary moved rather than keeping one set for its old timing.
   Actions enable, disable, and run a schedule once immediately; a manual run
-  writes no tick row, so the next scheduled tick still fires.
+  writes no tick row, so the next scheduled tick still fires. It is also the
+  one way to run a paused schedule: it ignores both `enabled` and `end_time`,
+  and says how many of the schedules it ran were disabled or already ended.
+  The changelist carries `end_time`, so a row that has ended is visible where
+  the selection is made.
 - `manage.py ox_import_beat_schedules`, which reads a `django-celery-beat`
   schedule table and prints the django-ox equivalents. It writes nothing, names
   what it could not translate and why, and says which timing will differ.

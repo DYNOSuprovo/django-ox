@@ -293,6 +293,10 @@ class OxScheduleAdmin(_ScheduleAdmin):
         "timing",
         "enabled",
         "start_time",
+        # Here because "Run selected schedules once now" ignores it, so an
+        # operator choosing rows has to be able to see which of them have
+        # already ended.
+        "end_time",
         "last_tick",
     )
     list_filter = ("enabled", "trigger")
@@ -476,10 +480,18 @@ class OxScheduleAdmin(_ScheduleAdmin):
         the task directly passed the row's raw values where a tick passes
         the form's cleaned ones, and skipped the backend binding, so the
         two could differ in both what they carried and where they landed.
+
+        A disabled schedule and one past its end time both run: this is the
+        one way to run a paused schedule, and a run is not a tick, so
+        neither bound applies to it. Both are reported, because the
+        changelist shows paused and running rows together, an admin action
+        has no confirmation step, and a success count alone leaves an
+        operator who mis-selected a paused schedule with nothing to read.
         """
         alias, options = self._stored_backend()
         source = stored.DatabaseScheduleSource(options, alias)
-        run, skipped = 0, 0
+        now = timezone.now()
+        run, skipped, overridden = 0, 0, 0
         for schedule in queryset:
             if not self.has_change_permission(request, schedule):
                 continue
@@ -490,11 +502,24 @@ class OxScheduleAdmin(_ScheduleAdmin):
                 continue
             built.task.enqueue(*built.args, **built.kwargs)
             run += 1
+            # Counted after the enqueue, so a row that could not be built is
+            # reported as skipped rather than as a run that overrode a bound.
+            if not schedule.enabled or (
+                schedule.end_time is not None and schedule.end_time < now
+            ):
+                overridden += 1
         self.message_user(request, f"Enqueued {run} task(s).", messages.SUCCESS)
         if skipped:
             self.message_user(
                 request,
                 f"Skipped {skipped} schedule(s) that cannot run as written.",
+                messages.WARNING,
+            )
+        if overridden:
+            self.message_user(
+                request,
+                f"Ran {overridden} schedule(s) that were disabled or past "
+                "their end time. A manual run ignores both.",
                 messages.WARNING,
             )
 
