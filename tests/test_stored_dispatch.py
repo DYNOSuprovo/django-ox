@@ -635,6 +635,91 @@ class TestTheBoundaryMustMatchTheTiming:
         at(130)
         assert worker.dispatch_schedules() == 1, "the schedule has resumed"
 
+    def test_a_raw_resume_before_the_heal_does_not_cancel_it(self, worker, monkeypatch):
+        """
+        The pause is met under the lock at T+70 and queued for the next
+        pass's heal. The raw resume lands at T+72, before that pass. At
+        T+75 the row's digest matches its boundary again, because
+        `enabled` is back to the value the boundary was set for, and a
+        heal that asked only whether the digest matched would skip. The
+        boundary must still move: the row was seen in a state it was not
+        set for, and nothing else has moved it since.
+        """
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(second=0, microsecond=0)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+        row = a_minutely(start_time=base - timedelta(minutes=5))
+        source = worker._schedule_source
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        at(10)
+        assert worker.dispatch_schedules() == 1, "T fires"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0, "refused under the lock"
+        assert row.pk in source._needs_heal, "the pause seen at dispatch was not kept"
+        at(72)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
+        at(75)
+        assert worker.dispatch_schedules() == 0, "the heal pass; not a full read"
+        assert not source._needs_heal
+        row.refresh_from_db()
+        assert row.start_time == base + timedelta(seconds=75), (
+            "the heal was cancelled by the resume restoring the digest"
+        )
+        source._reconcile_interval = 0  # the next call is a full read
+        at(90)
+        assert worker.dispatch_schedules() == 0, "T+60 came due inside the pause"
+        fired = sorted(
+            (t - base).total_seconds()
+            for t in OxScheduleTick.objects.exclude(task_id=None).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+        assert fired == [0], f"replayed a tick from inside the pause: {fired}"
+        at(130)
+        assert worker.dispatch_schedules() == 1, "the schedule has resumed"
+
+    def test_a_boundary_someone_else_moved_is_left_alone(self, worker, monkeypatch):
+        """
+        The other half of the same check. A second worker healed the row,
+        or the write API resumed it, between this worker's sighting and
+        its heal: the boundary column and start time differ from the ones
+        this worker saw, and their boundary stands rather than being
+        moved again to this worker's later clock.
+        """
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(second=0, microsecond=0)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+        row = a_minutely(start_time=base - timedelta(minutes=5))
+        source = worker._schedule_source
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        at(10)
+        assert worker.dispatch_schedules() == 1
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0
+        assert row.pk in source._needs_heal
+        at(72)
+        update_schedule(row, enabled=True)  # moves the boundary to T+72
+        at(75)
+        worker.dispatch_schedules()
+        row.refresh_from_db()
+        assert row.start_time == base + timedelta(seconds=72), (
+            "a boundary the write API had already moved was moved again"
+        )
+
     def test_the_same_pause_through_the_write_api_is_detected(self, worker):
         row = a_minutely()
         worker._schedule_source.schedules()

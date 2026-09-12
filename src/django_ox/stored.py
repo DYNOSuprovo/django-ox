@@ -385,10 +385,18 @@ class DatabaseScheduleSource:
         self._settings: list[Any] | None = None
         self._cached: list[Any] = []
         self._seen_change: Any = _UNREAD
-        #: Rows whose boundary was found stale. Healed on the next pass
-        #: rather than in place: the dispatch transaction rolls back when a
-        #: tick is refused, which would take the heal with it.
-        self._needs_heal: set[Any] = set()
+        #: Rows whose boundary was found stale, with the boundary as it
+        #: stood when it was found: the digest column and the start time.
+        #: Healed on the next pass rather than in place: the dispatch
+        #: transaction rolls back when a tick is refused, which would take
+        #: the heal with it. The observed boundary is what the heal checks
+        #: against, not whether the digest matches by then. A row disabled
+        #: with queryset.update, met under the lock, and re-enabled the
+        #: same way before the next pass matches its digest again, and a
+        #: heal that asked only that would skip, leave the boundary where
+        #: the pause found it, and fire the tick that came due inside the
+        #: pause at the next full read.
+        self._needs_heal: dict[Any, tuple[Any, Any]] = {}
         #: When the rows were last read in full, on the monotonic clock.
         #: None means never.
         self._last_read: float | None = None
@@ -489,19 +497,30 @@ class DatabaseScheduleSource:
         copy still holds the old timing has nothing else to tell it to
         re-read, and would go on proposing ticks the row no longer wants.
         """
-        pending, self._needs_heal = self._needs_heal, set()
+        pending, self._needs_heal = self._needs_heal, {}
         now = timezone.now()
-        for pk in pending:
+        for pk, observed in pending.items():
             try:
                 with transaction.atomic(using=self._db_alias):
                     row = _lock_row(pk, self._db_alias)
                     if row is None:
                         continue
-                    digest = boundary_digest(row)
-                    if row.boundary_for == digest:
-                        continue  # someone else healed it first
+                    if (row.boundary_for, row.start_time) != observed:
+                        # Someone wrote the boundary since this worker saw
+                        # it stale: another worker's heal, or the write
+                        # API, and every such write sets the start time
+                        # too. Their boundary stands.
+                        continue
+                    # Whether or not the digest matches by now. The row was
+                    # seen in a state its boundary was not set for, and
+                    # nothing has moved the boundary since, so the state it
+                    # is in now is one it reached after the boundary was
+                    # set. A pause and a resume between the sighting and
+                    # this lock leave the digest equal to the column, and
+                    # the tick between them still has to be behind the
+                    # boundary.
                     OxSchedule.objects.using(self._db_alias).filter(pk=pk).update(
-                        start_time=now, boundary_for=digest
+                        start_time=now, boundary_for=boundary_digest(row)
                     )
                     _touch_change_row(self._db_alias)
                 logger.info(
@@ -516,7 +535,7 @@ class DatabaseScheduleSource:
                     exc_info=True,
                     extra={"event": "schedule_boundary_heal_failed"},
                 )
-                self._needs_heal.add(pk)
+                self._needs_heal[pk] = observed
 
     def _build(self) -> list[Any]:
         built = []
@@ -534,7 +553,7 @@ class DatabaseScheduleSource:
             # future, or a period long enough that the next tick is months
             # away would each hide that the row had changed.
             if row.boundary_for != boundary_digest(row):
-                self._needs_heal.add(row.pk)
+                self._needs_heal[row.pk] = (row.boundary_for, row.start_time)
             if not row.enabled:
                 continue
             try:
@@ -655,8 +674,9 @@ class DatabaseScheduleSource:
                 # A pause made outside the write API, met at dispatch
                 # before any full read found it. Healed on the next pass,
                 # so the boundary sits at the pause and a raw resume cannot
-                # fire a tick from inside it.
-                self._needs_heal.add(pk)
+                # fire a tick from inside it, whether the resume lands
+                # before or after the heal.
+                self._needs_heal[pk] = (row.boundary_for, row.start_time)
             # Drop it from the snapshot too. Returning None alone would
             # leave the row in the cache, so every later pass would plan its
             # tick and take its lock again for a schedule that cannot fire.
@@ -669,7 +689,7 @@ class DatabaseScheduleSource:
             # this worker planned belongs to a definition that no longer
             # applies. Refuse it, and heal on the next pass: the refusal
             # rolls this transaction back and would take the heal with it.
-            self._needs_heal.add(pk)
+            self._needs_heal[pk] = (row.boundary_for, row.start_time)
             return None
         try:
             return self._to_schedule(row)

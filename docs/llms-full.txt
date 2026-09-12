@@ -3540,7 +3540,9 @@ for your engine.
   of the change instead of firing a tick that already passed. Because that
   record is derived from the row rather than incremented by a write path, a
   retime or a pause made with a bulk `update()` is noticed too, at the next
-  read, and the boundary moves to that read. A change made and reverted
+  read, and the boundary moves to that read: the worker remembers the
+  boundary it found the row stale against, so a row re-enabled the same way
+  before the move is written still gets it. A change made and reverted
   between two reads is not, and the schedules page says what that means for a
   bulk pause and resume. Ticks are recorded against the row, as `db:<id>`, so
   renaming a schedule keeps its history; a settings-declared schedule may not
