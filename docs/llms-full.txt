@@ -791,6 +791,15 @@ Schedules now appear in the admin under django-ox. Nothing else changes: the
 worker is the same process, there is still no scheduler to deploy, and
 `SCHEDULES` entries keep working if you use both.
 
+All three steps matter. The admin
+section appears once the migration has run, whether or not a backend sets
+`SCHEDULE_SOURCE`. Without that option a row saves and then never dispatches:
+no error, no log line, and nothing from `manage.py check`. "Run selected
+schedules once now" still enqueues the task, so it is not evidence that the
+schedule is wired up. If schedules created in the admin never fire on their
+own, check that a backend's `OPTIONS` sets `SCHEDULE_SOURCE` to
+`django_ox.stored.DatabaseScheduleSource`.
+
 ## What a person with admin access can do
 
 They can pick a task from the list you exposed, set its timing and arguments,
@@ -1073,7 +1082,9 @@ Worth knowing before you turn it on:
   and ignored so the others keep running. Watch for `schedule_row_skipped`.
 - **`manage.py check` cannot see rows.** Checks run before `migrate`, so a bad
   schedule in the database is a log line, not a start-up error. Settings-declared
-  schedules still fail fast.
+  schedules still fail fast. A missing `SCHEDULE_SOURCE` is not a check error
+  either: leaving it out is the default, and a check cannot read the rows that
+  would make it a mistake.
 - **`task_enqueued` receivers run inside the dispatch transaction**, while the
   worker holds the schedule row's lock. A receiver that takes row locks of its
   own can deadlock against an application transaction that holds those rows and
