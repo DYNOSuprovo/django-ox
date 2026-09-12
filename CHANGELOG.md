@@ -19,6 +19,18 @@ once it is applied. Migrate before starting any worker whose backend names
 `django_ox.stored.DatabaseScheduleSource`, and before opening the schedule
 admin: both read the new tables.
 
+One thing a rolling deploy does not close. A settings schedule that has no
+tick yet and is first seen during the rollout can be anchored twice, once by
+a 1.1.0 worker and once by a worker on this release, when their passes hold
+different ticks: the 1.1.0 worker does not take the first-sighting latch this
+release adds, so the latch serialises only the new workers. The later of the
+two ticks is then recorded with no task and does not fire. That is the race
+1.1.0 has between two of its own workers, not one this release introduces,
+and it ends when the last 1.1.0 worker stops. Once a schedule has any tick,
+both versions coordinate on the tick log's unique index and nothing anchors
+again. Stored schedules are not affected: a row carries its boundary and never
+anchors.
+
 Migrating back to `0006` drops both tables and every stored schedule with
 them. The tick log keeps its rows, including those named `db:<id>` for
 schedules that no longer exist. A worker on this release that is still
