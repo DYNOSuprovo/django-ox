@@ -1,10 +1,11 @@
 """Dispatching schedules that live in the database."""
 
+import logging
 from datetime import timedelta
 
 import pytest
 from django import forms
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.utils import timezone
 
 from django_ox.models import OxSchedule, OxScheduleTick, OxTask
@@ -1585,6 +1586,67 @@ class TestAnOrdinaryEditCannotLaunderAStaleBoundary:
         )
         assert row.boundary_generation == 1
         assert row.boundary_for == boundary_digest(row)
+
+
+class TestAnUnreadableMarkerIsReportedWithoutATraceback:
+    """
+    The marker read is one statement on one small table, once a dispatch
+    pass, and while it keeps failing it keeps being reported: at the
+    default interval that is a record a second per worker. A traceback on
+    each of them is byte-identical every time and costs about 3.4 KB a
+    record -- 13 MB an hour per worker -- which on a log or error-tracking
+    quota is enough to rate-limit the reports that carry information. The
+    same reasoning already governs the lock-contention warning next door.
+    """
+
+    def test_it_names_the_cause_and_carries_no_traceback(
+        self, worker, caplog, monkeypatch
+    ):
+        a_minutely()
+        source = worker._schedule_source
+        source.schedules()
+
+        def unreadable(*args, **kwargs):
+            raise OperationalError("no such table: django_ox_oxschedulechange")
+
+        monkeypatch.setattr(
+            "django_ox.models.OxScheduleChange.objects", _Raising(unreadable)
+        )
+        with caplog.at_level(logging.WARNING, logger="django_ox"):
+            assert [s.name for s in source.schedules()] == ["minutely"], (
+                "an unreadable marker must not read as no schedules at all"
+            )
+        warned = [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "schedule_source_unavailable"
+        ]
+        assert len(warned) == 1
+        assert warned[0].exc_info is None, (
+            "a traceback repeated every pass is the whole of the log volume"
+        )
+        assert "no such table" in warned[0].getMessage(), (
+            "without the traceback the message has to name the cause"
+        )
+
+
+class _Raising:
+    """A manager stand-in whose every chained call raises."""
+
+    def __init__(self, raiser):
+        self._raiser = raiser
+
+    def using(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def values_list(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        self._raiser()
 
 
 class TestADroppedTickIsReportedOnce:

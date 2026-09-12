@@ -115,7 +115,8 @@ for your engine.
   steady state is one read of one row per dispatch pass. A row that no longer
   validates is skipped and logged as `schedule_row_skipped`; the others still
   run. When the rows cannot be read at all, the worker logs
-  `schedule_source_unavailable` and keeps dispatching the set it last read.
+  `schedule_source_unavailable`, with the database's own message and no
+  traceback, and keeps dispatching the set it last read.
 - A schedule disabled, retimed or deleted after a worker read it does not
   fire. The check runs inside the dispatch transaction, under the row's own
   lock, because no polling interval is short enough to close that window. It

@@ -504,15 +504,23 @@ class DatabaseScheduleSource:
                 .values_list("changed_at", flat=True)
                 .first()
             )
-        except DatabaseError:
+        except DatabaseError as exc:
             # Reading the marker failed. An empty list would read as "no
             # schedules are configured", which is a different and much
             # worse claim, so the last known set stands until the database
             # answers again.
+            #
+            # The cause in the message and no traceback, the way
+            # schedule_lock_unavailable already reports. This is one
+            # statement on one small table once a dispatch pass, so while
+            # it keeps failing it is reported about once a second per
+            # worker, and the traceback is byte-identical every time: it
+            # carries nothing the message does not and costs about 3.4 KB
+            # a record, which is enough to crowd out the reports that do.
             logger.warning(
-                "Could not read the schedule change marker; using the last "
-                "known schedules",
-                exc_info=True,
+                "Could not read the schedule change marker (%s); using the "
+                "last known schedules",
+                exc,
                 extra={"event": "schedule_source_unavailable"},
             )
             return self._cached
