@@ -139,6 +139,13 @@ again. `sqlmigrate django_ox 0007` prints the statements for your engine.
   settings-declared schedule's tick it was logged as
   `schedule_dispatch_error` with a traceback, as though the schedule were
   broken; it is a lost race with a slow winner.
+- A `transaction.on_commit` callback that raises after a dispatch commits is
+  logged as `schedule_dispatch_callback_failed` and the dispatch is counted,
+  since the task exists and the tick is recorded. It was reported as
+  `schedule_dispatch_error`, as though nothing had been enqueued. The
+  stored-schedules page states the lock order a `task_enqueued` receiver must
+  respect: it runs inside the dispatch transaction, under the schedule row's
+  lock.
 
 ### Fixed
 

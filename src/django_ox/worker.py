@@ -2312,6 +2312,11 @@ class Worker:
             ):
                 self._log_tick_dropped(schedule, scheduled_for, now)
                 continue
+            result = None
+            # Set as the last thing the transaction body does. An exception
+            # arriving with it set came from the block's exit, after the
+            # commit, which is where transaction.on_commit callbacks run.
+            body_done = False
             try:
                 with transaction.atomic(using=self._db_alias):
                     # The definition as it stands now, under its own lock.
@@ -2320,9 +2325,14 @@ class Worker:
                     # the row itself.
                     #
                     # The lock is taken before the enqueue rather than after.
-                    # The enqueue is an INSERT that takes no lock on this row,
-                    # so there is no order to invert, and deciding first means
-                    # a refused tick issues no write to roll back.
+                    # The enqueue itself is an INSERT that takes no lock on
+                    # this row, so for it there is no order to invert, and
+                    # deciding first means a refused tick issues no write to
+                    # roll back. A task_enqueued receiver is another matter:
+                    # it runs inside this transaction, under this lock, and
+                    # can take locks of its own. The documented rule for
+                    # receivers is that they take none a transaction that
+                    # writes schedules may hold, because that pair deadlocks.
                     current = (
                         schedule.refresh() if schedule.refresh is not None else schedule
                     )
@@ -2340,7 +2350,6 @@ class Worker:
                         current, scheduled_for, local_now, admitted_at
                     ):
                         raise _NotAdmitted
-                    result = None
                     # The tick row goes in first, before anything is
                     # enqueued. Every worker derives the same tick times, so
                     # on every tick all of them reach this line and exactly
@@ -2405,6 +2414,7 @@ class Worker:
                         result = current.task.enqueue(*current.args, **current.kwargs)
                         tick_row.task_id = result.id
                         tick_row.save(using=self._db_alias, update_fields=["task"])
+                    body_done = True
             except _NotAdmitted:
                 # The schedule changed between the read and now (disabled,
                 # retimed, or gone), or the tick predates its anchor. The
@@ -2469,20 +2479,43 @@ class Worker:
                 # ran. It goes there instead.
                 raise
             except Exception:
-                # Anything else at all. A schedule read from a row is input
-                # from a person, and the guarantee that one bad row cannot
-                # stop the others has to hold for the exception nobody
-                # predicted as much as for the ones that were.
-                logger.exception(
-                    "Schedule %s could not be dispatched this pass",
-                    schedule.name,
-                    extra={
-                        "event": "schedule_dispatch_error",
-                        "schedule": schedule.name,
-                        "worker_id": self.worker_id,
-                    },
-                )
-                continue
+                if body_done:
+                    # The body ran to its end, so this came from the exit:
+                    # the transaction is committed and a
+                    # transaction.on_commit callback, registered by a
+                    # task_enqueued receiver, raised. Django runs those
+                    # after the commit and does not guard them by default,
+                    # so the failure surfaced here as if the dispatch had
+                    # failed, and a task that exists went uncounted. The
+                    # task exists and the tick is recorded, so the dispatch
+                    # stands and the callback's failure is its own event.
+                    logger.warning(
+                        "Schedule %s dispatched, then a post-commit callback failed",
+                        schedule.name,
+                        exc_info=True,
+                        extra={
+                            "event": "schedule_dispatch_callback_failed",
+                            "schedule": schedule.name,
+                            "task_id": str(result.id) if result is not None else None,
+                            "worker_id": self.worker_id,
+                        },
+                    )
+                else:
+                    # Anything else at all. A schedule read from a row is
+                    # input from a person, and the guarantee that one bad
+                    # row cannot stop the others has to hold for the
+                    # exception nobody predicted as much as for the ones
+                    # that were.
+                    logger.exception(
+                        "Schedule %s could not be dispatched this pass",
+                        schedule.name,
+                        extra={
+                            "event": "schedule_dispatch_error",
+                            "schedule": schedule.name,
+                            "worker_id": self.worker_id,
+                        },
+                    )
+                    continue
             if result is not None:
                 dispatched += 1
                 logger.info(

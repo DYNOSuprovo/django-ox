@@ -318,6 +318,15 @@ Worth knowing before you turn it on:
 - **`manage.py check` cannot see rows.** Checks run before `migrate`, so a bad
   schedule in the database is a log line, not a start-up error. Settings-declared
   schedules still fail fast.
+- **`task_enqueued` receivers run inside the dispatch transaction**, while the
+  worker holds the schedule row's lock. A receiver that takes row locks of its
+  own can deadlock against an application transaction that holds those rows and
+  then writes the schedule, through `update_schedule` or the admin; the database
+  ends one of the two, and the tick is retried on the next pass. Keep receivers
+  to work that locks nothing a schedule-writing transaction may hold, and put
+  anything else in `transaction.on_commit`. A callback registered that way that
+  raises is logged as `schedule_dispatch_callback_failed`; the task it followed
+  is enqueued and counted.
 
 ## Monitoring
 

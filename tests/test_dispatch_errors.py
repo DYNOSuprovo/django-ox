@@ -14,9 +14,10 @@ import time
 from datetime import timedelta
 
 import pytest
-from django.db import DatabaseError, OperationalError, connection
+from django.db import DatabaseError, OperationalError, connection, transaction
 from django.utils import timezone
 
+from django_ox.compat import task_enqueued
 from django_ox.models import OxScheduleTick, OxTask
 from django_ox.schedules import lock_contention
 from django_ox.worker import Worker
@@ -259,4 +260,46 @@ class TestAMySQLLockWaitTimeoutOnTheTickRow:
         warned = events(caplog, "schedule_lock_unavailable")
         assert [r.schedule for r in warned] == ["one"], [r.getMessage() for r in warned]
         assert warned[0].exc_info is None, "contention is not a traceback"
+        assert not events(caplog, "schedule_dispatch_error")
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAPostCommitCallbackThatRaises:
+    """
+    Django runs transaction.on_commit callbacks at the outermost exit, after
+    the commit, and does not guard them by default. One registered by a
+    task_enqueued receiver that raises therefore leaves the dispatch block
+    after the task is committed. That is the callback's failure, not the
+    dispatch's: the task exists, the tick is recorded, and both are counted.
+
+    Transactional so the block is the outermost transaction and the callback
+    actually runs; inside a test transaction it would be deferred.
+    """
+
+    def test_the_dispatch_is_counted_and_the_callback_reported(self, worker, caplog):
+        with_history()
+
+        def failing_after_commit():
+            raise RuntimeError("the callback failed after the commit")
+
+        def receiver(sender, task_result, **kwargs):
+            transaction.on_commit(failing_after_commit)
+
+        task_enqueued.connect(receiver)
+        try:
+            with caplog.at_level(logging.INFO, logger="django_ox"):
+                dispatched = worker.dispatch_schedules()
+        finally:
+            task_enqueued.disconnect(receiver)
+
+        assert dispatched == len(TWO), "a task that exists went uncounted"
+        assert OxTask.objects.count() == len(TWO)
+        assert OxScheduleTick.objects.exclude(task_id=None).count() == len(TWO)
+        failed = events(caplog, "schedule_dispatch_callback_failed")
+        assert len(failed) == len(TWO)
+        assert all(r.exc_info is not None for r in failed), "the cause is wanted"
+        assert {str(t) for t in OxTask.objects.values_list("id", flat=True)} == {
+            r.task_id for r in failed
+        }
+        assert len(events(caplog, "schedule_dispatched")) == len(TWO)
         assert not events(caplog, "schedule_dispatch_error")
