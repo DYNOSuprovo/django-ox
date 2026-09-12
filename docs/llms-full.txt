@@ -3258,6 +3258,7 @@ of the period you have paid for. The full terms are stated at purchase.
 
 If Pro would earn its keep in your deployment, say which of the three
 features matters to you. That ordering decides what gets built after these.
+Join the waitlist below, or write to support@oxpull.com.
 
 [Join the Pro waitlist](https://oxpull.com/#waitlist){ .md-button }
 
