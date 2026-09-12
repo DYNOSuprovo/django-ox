@@ -792,6 +792,25 @@ class TestTheAdminSaysWhenNothingWillDispatchWhatItWrites:
         assert len(said) == 1, f"the same warning was shown twice: {said}"
 
 
+class TestTheEmptyRegistryHelpTextSaysWhereToPutTheDecorator:
+    def test_it_names_the_module_that_is_imported_and_the_setting(
+        self, client, admin_user, monkeypatch
+    ):
+        # @schedulable registers nothing unless its module is imported, and
+        # the only module django-ox imports for you is each installed app's
+        # `tasks`. A person who put the decorator in myapp/jobs.py was told
+        # to register one with @schedulable, which is what they had done.
+        monkeypatch.setattr("django_ox.registry._registry", {})
+        monkeypatch.setattr("django_ox.registry._discovered", True)
+        client.force_login(admin_user)
+        response = client.get(reverse(ADD_URL))
+        help_text = response.context["adminform"].form.fields["task_key"].help_text
+        assert "tasks" in help_text, "the module that is imported is not named"
+        assert "SCHEDULABLE_TASKS" in help_text, (
+            "the way to expose a task from any other module is not named"
+        )
+
+
 class TestReEnableThroughTheChangeForm:
     def test_the_boundary_moves(self, client, admin_user):
         # Through the form, not the action. save_model hands update_schedule

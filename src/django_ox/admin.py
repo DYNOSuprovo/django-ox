@@ -260,7 +260,10 @@ class OxScheduleForm(_ScheduleForm):
                 "Tasks the code has exposed with @schedulable or "
                 "SCHEDULABLE_TASKS. Nothing else can be scheduled."
                 if keys
-                else "No tasks are exposed yet. Register one with @schedulable."
+                else "No tasks are exposed yet. django-ox imports each "
+                "installed app's `tasks` module, so @schedulable takes "
+                "effect there; from any other module, name the task in "
+                "OPTIONS['SCHEDULABLE_TASKS']."
             ),
         )
 
