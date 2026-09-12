@@ -366,11 +366,21 @@ class DatabaseScheduleSource:
     treated as such. One that no longer validates, or that names a key
     this deployment does not register, is skipped and logged rather than
     allowed to stop every other schedule from firing.
+
+    The backend's ``OPTIONS["SCHEDULES"]`` come along as well. Naming this
+    source adds the rows to the schedules a project already declared; it
+    does not replace them, which would turn the switch into a silent stop
+    for every schedule the settings hold.
     """
 
     def __init__(self, options: dict[str, Any], backend_alias: str) -> None:
         self._options = options
         self._backend_alias = backend_alias
+        #: The settings schedules, built on first use rather than here.
+        #: A bad SCHEDULES entry is E002's to report; building it here
+        #: would report it again under E006, and the worker still fails at
+        #: startup because its constructor asks for the schedules.
+        self._settings: list[Any] | None = None
         self._cached: list[Any] = []
         self._seen_change: Any = _UNREAD
         #: Rows whose boundary was found stale. Healed on the next pass
@@ -398,6 +408,14 @@ class DatabaseScheduleSource:
             )
 
     def schedules(self) -> list[Any]:
+        if self._settings is None:
+            from .schedules import schedules_from_options
+
+            self._settings = schedules_from_options(self._options, self._backend_alias)
+        return [*self._settings, *self._rows()]
+
+    def _rows(self) -> list[Any]:
+        """The enabled rows as schedules, re-read when the marker moves."""
         if self._needs_heal:
             self._heal()
         try:

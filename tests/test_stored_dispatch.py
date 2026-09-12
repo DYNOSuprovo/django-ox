@@ -914,3 +914,42 @@ class TestAnIntegrityErrorFromTheEnqueueIsNotALostRace:
             for r in caplog.records
             if getattr(r, "event", None) == "schedule_dispatch_error"
         ], "a lost race was reported as a failure"
+
+
+class TestSettingsSchedulesKeepWorkingBesideTheRows:
+    """
+    docs/stored-schedules.md: "`SCHEDULES` entries keep working if you use
+    both." Naming the database source must add the rows to the settings
+    schedules, not replace them, or the switch silently stops every
+    schedule a project already had.
+    """
+
+    def _both(self, settings):
+        config = tasks_setting()
+        config["default"]["OPTIONS"]["SCHEDULES"] = {
+            "from-settings": {
+                "task": "tests.tasks.add",
+                "cron": "* * * * *",
+                "args": [1, 2],
+            }
+        }
+        settings.TASKS = config
+        a_minutely()
+        return Worker(backoff_initial=0)
+
+    def test_the_worker_sees_the_settings_schedule_and_the_row(self, settings):
+        worker = self._both(settings)
+        keys = sorted(s.key for s in worker._schedule_source.schedules())
+        assert len(keys) == 2, keys
+        assert "from-settings" in keys, "the settings schedule was dropped"
+        assert keys[0].startswith("db:"), keys
+
+    def test_one_pass_serves_both(self, settings):
+        worker = self._both(settings)
+        # The row fires on its first due tick; the settings schedule is
+        # anchored on first sight and fires on the next. Both leave a row.
+        assert worker.dispatch_schedules() == 1
+        names = set(OxScheduleTick.objects.values_list("schedule_name", flat=True))
+        assert "from-settings" in names, "the settings schedule was dropped"
+        assert any(n.startswith("db:") for n in names)
+        assert OxScheduleTick.objects.get(schedule_name="from-settings").task is None
