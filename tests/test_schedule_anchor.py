@@ -96,10 +96,56 @@ class TestASecondAnchorDoesNotSwallowATick:
         assert OxTask.objects.count() == 1
         assert OxScheduleTick.objects.count() == 2
 
-    def test_a_schedule_with_history_never_pays_for_the_check(
+    def test_the_first_sighting_read_is_skipped_when_the_bounded_read_shows_history(
+        self, settings, monkeypatch
+    ):
+        # Two schedules in one pass: a minutely one with a tick inside the
+        # pass's bound, and an hourly one whose anchor sets the bound at the
+        # top of the hour. The minutely schedule's newest tick is at or after
+        # the bound, so the pre-loop read answers for it and the in-transaction
+        # first-sighting read is not asked. Counted by its real shape, the
+        # only SELECT on the tick table that excludes a row by id.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        settings.TASKS = tasks_setting(
+            {
+                "minutely": {"task": "tests.tasks.add", "cron": "* * * * *"},
+                "hourly": {"task": "tests.tasks.add", "cron": "0 * * * *"},
+            }
+        )
+        worker = Worker(backoff_initial=0)
+        # Mid-hour, so the next minute is inside the same hour.
+        t0 = timezone.now().replace(minute=29, second=30, microsecond=0)
+        _at(worker, monkeypatch, t0)  # both anchor: minutely at :29, hourly at :00
+        monkeypatch.undo()
+        assert OxScheduleTick.objects.count() == 2
+
+        from django_ox import worker as worker_module
+
+        monkeypatch.setattr(
+            worker_module.timezone, "now", lambda: t0 + timedelta(minutes=1)
+        )
+        with CaptureQueriesContext(connection) as captured:
+            assert worker.dispatch_schedules() == 1, "the minutely tick fires"
+        monkeypatch.undo()
+        reads = [
+            q["sql"]
+            for q in captured.captured_queries
+            if _is_first_sighting_read(q["sql"])
+        ]
+        assert reads == [], (
+            f"the first-sighting read ran with history in the bound: {reads}"
+        )
+
+    def test_a_schedule_alone_in_its_pass_pays_one_read_per_dispatch(
         self, two_workers, monkeypatch
     ):
-        # The extra read exists only while a schedule has no ticks at all.
+        # The other case, and the one a lone settings schedule is always in.
+        # Its bound is its own due tick, so its newest tick, one period back,
+        # predates the bound and the pre-loop read says nothing about it.
+        # The first-sighting read is then asked, once, on every dispatch,
+        # and answers from the log. Not "only until it has a tick".
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
 
@@ -110,21 +156,18 @@ class TestASecondAnchorDoesNotSwallowATick:
 
         from django_ox import worker as worker_module
 
-        monkeypatch.setattr(
-            worker_module.timezone, "now", lambda: t0 + timedelta(minutes=1)
-        )
-        with CaptureQueriesContext(connection) as captured:
-            a.dispatch_schedules()
-        monkeypatch.undo()
-        existence_checks = [
-            q["sql"]
-            for q in captured.captured_queries
-            if "ox_schedule_tick" in q["sql"].lower() and " exists" in q["sql"].lower()
-        ]
-        assert not existence_checks, (
-            f"the first-sighting check ran for a schedule with history: "
-            f"{existence_checks}"
-        )
+        for minutes in (1, 2):
+            moment = t0 + timedelta(minutes=minutes)
+            monkeypatch.setattr(worker_module.timezone, "now", lambda m=moment: m)
+            with CaptureQueriesContext(connection) as captured:
+                assert a.dispatch_schedules() == 1
+            monkeypatch.undo()
+            reads = [
+                q["sql"]
+                for q in captured.captured_queries
+                if _is_first_sighting_read(q["sql"])
+            ]
+            assert len(reads) == 1, f"pass {minutes}: {len(reads)} first-sighting reads"
 
 
 class _ThreadClock:
