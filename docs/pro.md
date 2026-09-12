@@ -26,6 +26,8 @@ the `django-tasks` backport; Pro does not.
   callback once every member has settled. Completion is computed by querying
   the task rows rather than by counting signals, so a worker dying mid-task
   cannot strand a batch: the reconciler picks it up on the next tick.
+  Complete is a reading of the task rows, not proof that every member has
+  stopped running.
   Batches take one setting: `oxpull.batches.reconcile` on a one-minute cron
   in `OPTIONS["SCHEDULES"]`, run by the django-ox cron you already have.
 - **Rate limiting.** Cap how often a task starts. A named limit of N
@@ -38,14 +40,16 @@ the `django-tasks` backport; Pro does not.
 
   For a limit of N admissions per period P, with W `ox_worker` processes
   claiming from the queues that carry the limit's tasks, the number of
-  task attempts started in any one window is at most N + W - 1. Add one
-  for each worker process that dies between claiming a limited task and
-  recording it. With a single worker process and no such death the
-  limiter is exact: at most N per window. Windows are contiguous, so an
-  arbitrary interval of length P that spans a boundary can carry up to
-  2(N + W - 1). A count that cannot be written is logged and the
-  attempt runs; three consecutive failed counts on one limit close it
-  until a write lands.
+  task attempts started in any one window is at most N + W - 1 + U. U is
+  the number of admissions whose count did not land. Each one logs
+  `rate_limit_uncounted`, so U is the number of times that event fired.
+  Add one for each worker process that dies between claiming a limited
+  task and recording it. With a single worker process, no such death and
+  every count landed, the limiter is exact: at most N per window. Windows
+  are contiguous, so an arbitrary interval of length P that spans a
+  boundary can carry up to 2(N + W - 1 + U). A count that cannot be
+  written is logged and the attempt runs; three uncounted admissions in a
+  row on one limit close it until a write lands.
 
 All three run on the databases the free tier tests in CI: SQLite,
 PostgreSQL and MySQL 8. MariaDB 10.6+ takes the same claim path but is not
