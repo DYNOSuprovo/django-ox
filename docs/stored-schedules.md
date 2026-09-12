@@ -76,6 +76,9 @@ own, check that a backend's `OPTIONS` sets `SCHEDULE_SOURCE` to
 They can pick a task from the list you exposed, set its timing and arguments,
 enable it, disable it, and run it once immediately.
 
+Running one immediately ignores both the pause and the end time: a schedule
+that is disabled or past its `end_time` still runs.
+
 They cannot name a task you haven't exposed. The field is a list, not a text box,
 and a hand-written POST is refused too.
 
