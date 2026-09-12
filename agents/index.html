@@ -811,7 +811,7 @@ copies: <a href="../llms.txt">llms.txt</a> (facts and links) and
 Context7 library id: <code>/oxpull/django-ox</code>.</p>
 <h2 id="set-up-django-ox-in-this-project">Set up django-ox in this project</h2>
 <p>Requires Python 3.12+ and Django 5.2+. Check before installing:</p>
-<div class="highlight"><pre><span></span><code>python -c &quot;import django, sys; print(django.__version__, sys.version.split()[0])&quot;
+<div class="highlight"><pre><span></span><code>python -c "import django, sys; print(django.__version__, sys.version.split()[0])"
 </code></pre></div>
 <p>Django 6.0 and later ship the Tasks framework in core. On Django 5.2 LTS it
 comes from the <code>django-tasks</code> backport, so install the <code>backport</code> extra there.</p>
@@ -822,20 +822,20 @@ comes from the <code>django-tasks</code> backport, so install the <code>backport
 <div class="highlight"><pre><span></span><code>uv add django-ox
 </code></pre></div>
 <p>On Django 5.2 LTS:</p>
-<div class="highlight"><pre><span></span><code>pip install &quot;django-ox[backport]&quot;
+<div class="highlight"><pre><span></span><code>pip install "django-ox[backport]"
 </code></pre></div>
 <p>or, with uv:</p>
-<div class="highlight"><pre><span></span><code>uv add &quot;django-ox[backport]&quot;
+<div class="highlight"><pre><span></span><code>uv add "django-ox[backport]"
 </code></pre></div>
 <p>Edit <code>settings.py</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="n">INSTALLED_APPS</span> <span class="o">=</span> <span class="p">[</span>
     <span class="c1"># ...</span>
-    <span class="s2">&quot;django_ox&quot;</span><span class="p">,</span>
+    <span class="s2">"django_ox"</span><span class="p">,</span>
 <span class="p">]</span>
 
 <span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
     <span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
@@ -847,26 +847,25 @@ comes from the <code>django-tasks</code> backport, so install the <code>backport
 OK: backlog=0 oldest_age=none last_claim_age=none
 </code></pre></div>
 <p><code>manage.py check</code> also runs the django-ox system checks, so a bad schedule
-or timeout option fails here, as <code>django_ox.E002</code> to <code>E005</code>, before anything
-deploys.</p>
+or timeout option fails here, as <code>django_ox.E002</code> to <code>E005</code> and <code>E010</code>, before anything deploys.</p>
 <p>Start a worker in its own process, next to the web server, under the same
 supervisor:</p>
 <div class="highlight"><pre><span></span><code>python manage.py ox_worker
 </code></pre></div>
 <p>Settings with every option named, for when the defaults need changing:</p>
 <div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;QUEUES&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;default&quot;</span><span class="p">],</span>  <span class="c1"># [] allows any queue name</span>
-        <span class="s2">&quot;OPTIONS&quot;</span><span class="p">:</span> <span class="p">{</span>
-            <span class="s2">&quot;MAX_ATTEMPTS&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>  <span class="c1"># claims per task before FAILED</span>
-            <span class="s2">&quot;LOCK_TIMEOUT&quot;</span><span class="p">:</span> <span class="mi">300</span><span class="p">,</span>  <span class="c1"># seconds a worker may stop renewing its lease</span>
-            <span class="s2">&quot;BACKOFF_INITIAL&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span>  <span class="c1"># first retry delay, seconds; doubles each attempt</span>
-            <span class="s2">&quot;BACKOFF_MAX&quot;</span><span class="p">:</span> <span class="mi">600</span><span class="p">,</span>  <span class="c1"># retry delay ceiling, seconds</span>
-            <span class="s2">&quot;TASK_TIMEOUT&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>  <span class="c1"># seconds one attempt may run; None is no limit</span>
-            <span class="s2">&quot;TASK_TIMEOUTS&quot;</span><span class="p">:</span> <span class="p">{},</span>  <span class="c1"># per-queue values, {&quot;queue&quot;: seconds}</span>
-            <span class="s2">&quot;TASK_TIMEOUT_GRACE&quot;</span><span class="p">:</span> <span class="mi">30</span><span class="p">,</span>  <span class="c1"># seconds a timed-out thread gets to stop</span>
-            <span class="s2">&quot;SCHEDULES&quot;</span><span class="p">:</span> <span class="p">{},</span>  <span class="c1"># recurring tasks, see Recurring tasks</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"QUEUES"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"default"</span><span class="p">],</span>  <span class="c1"># [] allows any queue name</span>
+        <span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">"MAX_ATTEMPTS"</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>  <span class="c1"># claims per task before FAILED</span>
+            <span class="s2">"LOCK_TIMEOUT"</span><span class="p">:</span> <span class="mi">300</span><span class="p">,</span>  <span class="c1"># seconds a worker may stop renewing its lease</span>
+            <span class="s2">"BACKOFF_INITIAL"</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span>  <span class="c1"># first retry delay, seconds; doubles each attempt</span>
+            <span class="s2">"BACKOFF_MAX"</span><span class="p">:</span> <span class="mi">600</span><span class="p">,</span>  <span class="c1"># retry delay ceiling, seconds</span>
+            <span class="s2">"TASK_TIMEOUT"</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>  <span class="c1"># seconds one attempt may run; None is no limit</span>
+            <span class="s2">"TASK_TIMEOUTS"</span><span class="p">:</span> <span class="p">{},</span>  <span class="c1"># per-queue values, {"queue": seconds}</span>
+            <span class="s2">"TASK_TIMEOUT_GRACE"</span><span class="p">:</span> <span class="mi">30</span><span class="p">,</span>  <span class="c1"># seconds a timed-out thread gets to stop</span>
+            <span class="s2">"SCHEDULES"</span><span class="p">:</span> <span class="p">{},</span>  <span class="c1"># recurring tasks, see Recurring tasks</span>
         <span class="p">},</span>
     <span class="p">}</span>
 <span class="p">}</span>
@@ -942,13 +941,14 @@ supervisor:</p>
   With <code>django.contrib.admin</code> installed, the task table appears in the admin
   with the same two actions.</li>
 <li>A particular running task cannot be interrupted on demand; <code>TASK_TIMEOUT</code>
-  bounds every attempt. Tasks live on the default database.</li>
+  bounds every attempt. Every table lives on the database your router sends
+  <code>OxTask</code> to.</li>
 <li>In tests use the framework's own backends for <code>TASKS</code>:
   <code>django.tasks.backends.immediate.ImmediateBackend</code> or
   <code>django.tasks.backends.dummy.DummyBackend</code> on Django 6.0+, and the same
   paths under <code>django_tasks.backends.</code> on Django 5.2 LTS.</li>
 <li>Batches, unique tasks and rate limiting are in <a href="../pro/">Oxpull Pro</a>, a
-  paid add-on that is not on sale yet. <code>django_ox.stats</code> and <code>ox_health</code>
+  paid add-on. <code>django_ox.stats</code> and <code>ox_health</code>
   are in django-ox.</li>
 </ul>
 <h2 id="how-to-verify-it-works">How to verify it works</h2>

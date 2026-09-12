@@ -607,6 +607,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Monitoring recipes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-errors-holds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What errors holds
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -887,6 +904,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Monitoring recipes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-errors-holds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What errors holds
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -958,8 +992,8 @@ request, a shell or a metrics collector, on every tested database.</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">django_ox</span><span class="w"> </span><span class="kn">import</span> <span class="n">stats</span>
 
 <span class="n">stats</span><span class="o">.</span><span class="n">queue_stats</span><span class="p">()</span>
-<span class="c1"># [QueueStats(queue_name=&quot;default&quot;, ready=3, running=1, failed=0, successful=214),</span>
-<span class="c1">#  QueueStats(queue_name=&quot;emails&quot;, ready=0, running=0, failed=2, successful=560)]</span>
+<span class="c1"># [QueueStats(queue_name="default", ready=3, running=1, failed=0, successful=214, lost=0, discarded=0),</span>
+<span class="c1">#  QueueStats(queue_name="emails", ready=0, running=0, failed=2, successful=560, lost=0, discarded=0)]</span>
 
 <span class="n">stats</span><span class="o">.</span><span class="n">ready_count</span><span class="p">()</span>  <span class="c1"># tasks eligible to run right now</span>
 <span class="n">stats</span><span class="o">.</span><span class="n">oldest_ready_age</span><span class="p">()</span>  <span class="c1"># timedelta, or None when nothing waits</span>
@@ -1071,7 +1105,7 @@ steady traffic:</p>
 <div class="highlight"><pre><span></span><code><span class="nt">livenessProbe</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">exec</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">command</span><span class="p">:</span>
-<span class="w">      </span><span class="p p-Indicator">[</span><span class="s">&quot;python&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;manage.py&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;ox_health&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;--worker-timeout&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;300&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="p p-Indicator">[</span><span class="s">"python"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"manage.py"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"ox_health"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"--worker-timeout"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"300"</span><span class="p p-Indicator">]</span>
 <span class="w">  </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
 <span class="w">  </span><span class="nt">timeoutSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
 <span class="w">  </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
@@ -1088,7 +1122,7 @@ job at it:</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">django.urls</span><span class="w"> </span><span class="kn">import</span> <span class="n">include</span><span class="p">,</span> <span class="n">path</span>
 
 <span class="n">urlpatterns</span> <span class="o">=</span> <span class="p">[</span>
-    <span class="n">path</span><span class="p">(</span><span class="s2">&quot;ox/&quot;</span><span class="p">,</span> <span class="n">include</span><span class="p">(</span><span class="s2">&quot;django_ox.urls&quot;</span><span class="p">)),</span>  <span class="c1"># GET /ox/metrics</span>
+    <span class="n">path</span><span class="p">(</span><span class="s2">"ox/"</span><span class="p">,</span> <span class="n">include</span><span class="p">(</span><span class="s2">"django_ox.urls"</span><span class="p">)),</span>  <span class="c1"># GET /ox/metrics</span>
 <span class="p">]</span>
 </code></pre></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># prometheus.yml</span>
@@ -1096,7 +1130,7 @@ job at it:</p>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">django_ox</span>
 <span class="w">    </span><span class="nt">metrics_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/ox/metrics</span>
 <span class="w">    </span><span class="nt">static_configs</span><span class="p">:</span>
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;app.internal:8000&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">targets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"app.internal:8000"</span><span class="p p-Indicator">]</span>
 </code></pre></div>
 <p>The response is <code>text/plain; version=0.0.4</code>. A scraper that sends
 <code>Accept: application/openmetrics-text</code> gets the OpenMetrics form of the
@@ -1109,21 +1143,21 @@ side of a load balancer. Two one-line ways:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib.auth.decorators</span><span class="w"> </span><span class="kn">import</span> <span class="n">login_required</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">django_ox.views</span><span class="w"> </span><span class="kn">import</span> <span class="n">metrics</span>
 
-<span class="n">path</span><span class="p">(</span><span class="s2">&quot;ox/metrics&quot;</span><span class="p">,</span> <span class="n">login_required</span><span class="p">(</span><span class="n">metrics</span><span class="p">))</span>  <span class="c1"># session auth, for a human</span>
+<span class="n">path</span><span class="p">(</span><span class="s2">"ox/metrics"</span><span class="p">,</span> <span class="n">login_required</span><span class="p">(</span><span class="n">metrics</span><span class="p">))</span>  <span class="c1"># session auth, for a human</span>
 </code></pre></div>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.http</span><span class="w"> </span><span class="kn">import</span> <span class="n">HttpResponseForbidden</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">from_prometheus</span><span class="p">(</span><span class="n">view</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">guard</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
-        <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">META</span><span class="p">[</span><span class="s2">&quot;REMOTE_ADDR&quot;</span><span class="p">]</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">&quot;10.0.0.12&quot;</span><span class="p">}:</span>
+        <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">META</span><span class="p">[</span><span class="s2">"REMOTE_ADDR"</span><span class="p">]</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">"10.0.0.12"</span><span class="p">}:</span>
             <span class="k">return</span> <span class="n">HttpResponseForbidden</span><span class="p">()</span>
         <span class="k">return</span> <span class="n">view</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 
     <span class="k">return</span> <span class="n">guard</span>
 
 
-<span class="n">path</span><span class="p">(</span><span class="s2">&quot;ox/metrics&quot;</span><span class="p">,</span> <span class="n">from_prometheus</span><span class="p">(</span><span class="n">metrics</span><span class="p">))</span>  <span class="c1"># the scraper&#39;s address only</span>
+<span class="n">path</span><span class="p">(</span><span class="s2">"ox/metrics"</span><span class="p">,</span> <span class="n">from_prometheus</span><span class="p">(</span><span class="n">metrics</span><span class="p">))</span>  <span class="c1"># the scraper's address only</span>
 </code></pre></div>
 <p>A network policy that only admits the scraper to the path does the same
 job without code.</p>
@@ -1201,11 +1235,11 @@ nothing in django-ox imports <code>opentelemetry</code>.</p>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">observe_backlog</span><span class="p">(</span><span class="n">options</span><span class="p">):</span>
     <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">stats</span><span class="o">.</span><span class="n">queue_stats</span><span class="p">():</span>
-        <span class="k">yield</span> <span class="n">Observation</span><span class="p">(</span><span class="n">row</span><span class="o">.</span><span class="n">ready</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;queue&quot;</span><span class="p">:</span> <span class="n">row</span><span class="o">.</span><span class="n">queue_name</span><span class="p">})</span>
+        <span class="k">yield</span> <span class="n">Observation</span><span class="p">(</span><span class="n">row</span><span class="o">.</span><span class="n">ready</span><span class="p">,</span> <span class="p">{</span><span class="s2">"queue"</span><span class="p">:</span> <span class="n">row</span><span class="o">.</span><span class="n">queue_name</span><span class="p">})</span>
 
 
-<span class="n">meter</span> <span class="o">=</span> <span class="n">otel</span><span class="o">.</span><span class="n">get_meter</span><span class="p">(</span><span class="s2">&quot;django_ox&quot;</span><span class="p">)</span>
-<span class="n">meter</span><span class="o">.</span><span class="n">create_observable_gauge</span><span class="p">(</span><span class="s2">&quot;django_ox.ready_tasks&quot;</span><span class="p">,</span> <span class="n">callbacks</span><span class="o">=</span><span class="p">[</span><span class="n">observe_backlog</span><span class="p">])</span>
+<span class="n">meter</span> <span class="o">=</span> <span class="n">otel</span><span class="o">.</span><span class="n">get_meter</span><span class="p">(</span><span class="s2">"django_ox"</span><span class="p">)</span>
+<span class="n">meter</span><span class="o">.</span><span class="n">create_observable_gauge</span><span class="p">(</span><span class="s2">"django_ox.ready_tasks"</span><span class="p">,</span> <span class="n">callbacks</span><span class="o">=</span><span class="p">[</span><span class="n">observe_backlog</span><span class="p">])</span>
 </code></pre></div>
 <p>The same shape reads <code>oldest_ready_age()</code> or <code>failure_rate()</code> per queue.</p>
 <h2 id="log-events">Log events</h2>
@@ -1257,7 +1291,7 @@ The message text is not part of the contract. The keys are.</p>
 <tr>
 <td><code>worker_recycling</code></td>
 <td>WARNING</td>
-<td>The worker stopped claiming after a stuck thread; it drains its other tasks and exits with code 75. One follows every <code>task_stuck</code>, so on a worker logging <code>timeouts_backstop_only</code> every timeout that reaches the backstop costs a worker restart.</td>
+<td>The worker stopped claiming after a stuck thread; it drains its other tasks and exits with code 75. It follows a <code>task_stuck</code> whose thread is still inside the attempt, which is the usual case, so on a worker logging <code>timeouts_backstop_only</code> every timeout that reaches the backstop costs a worker restart.</td>
 </tr>
 <tr>
 <td><code>timeouts_backstop_only</code></td>
@@ -1277,7 +1311,7 @@ The message text is not part of the contract. The keys are.</p>
 <tr>
 <td><code>task_reclaimed</code></td>
 <td>WARNING</td>
-<td>The reaper took a task back from a worker that stopped refreshing its lock.</td>
+<td>The reaper took a task back from a worker that stopped refreshing its lock. One record per task. A pass whose stuck set changed while it ran (a lease renewed, or one more lease expired) instead emits a single record carrying <code>count</code> and no <code>task_id</code>, because it cannot say which tasks the reclaim covered.</td>
 </tr>
 <tr>
 <td><code>task_lease_lost</code></td>
@@ -1298,6 +1332,31 @@ The message text is not part of the contract. The keys are.</p>
 <td><code>worker_error</code></td>
 <td>ERROR</td>
 <td>The execution wrapper itself raised (an internal worker error, not a task failure).</td>
+</tr>
+<tr>
+<td><code>worker_poll_failed</code></td>
+<td>WARNING</td>
+<td>A database error ended one pass of the poll loop. The pass is abandoned and retried on the next one; the worker keeps running. A steady stream of it means the database is unreachable rather than slow.</td>
+</tr>
+<tr>
+<td><code>watchdog_error</code></td>
+<td>ERROR</td>
+<td>The timeout watchdog failed to handle one armed attempt. Every other attempt is unaffected and the thread keeps running.</td>
+</tr>
+<tr>
+<td><code>task_stuck_unrecorded</code></td>
+<td>WARNING</td>
+<td>A timed-out attempt could not be recorded as failed. The worker recycles regardless, so the row is recovered by the reaper rather than by this write.</td>
+</tr>
+<tr>
+<td><code>worker_drain_abandoned</code></td>
+<td>WARNING</td>
+<td>A recycling worker stopped waiting on tasks that had not finished. Their leases expire and the reaper requeues them. Carries <code>pending</code>.</td>
+</tr>
+<tr>
+<td><code>claim_filter_sql_missing</code></td>
+<td>WARNING</td>
+<td>Once per worker: a subclass overrides <code>claim_filter_q()</code> without <code>claim_filter_sql()</code>, so the single-statement PostgreSQL claim is given up for the path that applies the hook.</td>
 </tr>
 <tr>
 <td><code>worker_draining</code></td>
@@ -1426,6 +1485,16 @@ The message text is not part of the contract. The keys are.</p>
 <td>Status after reclaim: <code>READY</code> (requeued) or <code>LOST</code> (out of attempts).</td>
 </tr>
 <tr>
+<td><code>count</code></td>
+<td><code>task_reclaimed</code> without <code>task_id</code></td>
+<td>How many tasks that pass reclaimed. Present only on the batch record described above.</td>
+</tr>
+<tr>
+<td><code>held_by</code></td>
+<td><code>task_reclaimed</code></td>
+<td>The worker that stopped refreshing the lock, from the row. <code>worker_id</code> on the same record is the reaper that noticed. Absent on the batch record, along with <code>task_id</code>, <code>task_path</code>, <code>queue</code> and <code>attempt</code>.</td>
+</tr>
+<tr>
 <td><code>dropped_status</code></td>
 <td><code>task_lease_lost</code></td>
 <td>Status the dropped write would have set: <code>SUCCESSFUL</code>, <code>FAILED</code> or <code>READY</code>.</td>
@@ -1519,6 +1588,24 @@ column from <code>queue_stats()</code> for it.</p>
   admin page below shows the same fields, and the two actions close the
   loop once the cause is fixed.</li>
 </ul>
+<h3 id="what-errors-holds">What <code>errors</code> holds</h3>
+<p>One entry per failed attempt, each with the exception's dotted class path and
+its formatted traceback, plus one the reaper writes when it gives a lease up
+with no attempts left. A successful attempt adds nothing, so the entries count
+failures rather than runs. A traceback is whatever Python produced for that failure,
+so if an exception message or a chained cause carried a connection string, a
+token or a customer's data, that is what lands in the column: the same
+material your application's own error reporting already receives. Treat the
+column as you treat those reports.</p>
+<p>Two things bound it. Each traceback is stored up to 16,384 bytes of UTF-8,
+marker included, so one pathological failure cannot write an unbounded string
+onto the row. Bytes rather than characters, because that is the unit the column
+is sized in. And <code>ox_prune --include-failed</code> is the retention
+control: FAILED and LOST rows are kept by default so tracebacks survive until
+somebody has looked at them, and that flag is what eventually removes them.</p>
+<p>The admin's task page renders <code>errors</code> in full to anyone who can open it, which
+is a staff user with view permission on the model. If that is a wider audience
+than your error reporting has, narrow the permission rather than the column.</p>
 <h2 id="retrying-and-discarding">Retrying and discarding</h2>
 <p>Two operator actions live in <code>django_ox.actions</code>. Each is one
 compare-and-set UPDATE on the row's status and lease number, so it either
@@ -1543,6 +1630,11 @@ and only the reaper takes a lease away.</p>
 <td><code>retry(result_id)</code></td>
 <td>FAILED, LOST</td>
 <td>Sets the row back to READY for one more attempt, clears <code>run_after</code> so it is eligible at once, and raises <code>max_attempts</code> to <code>attempts + 1</code>. The count, <code>worker_ids</code> and every per-attempt traceback stay as they were, so the record still says what happened before. The lease number goes up, so a LOST row's last worker, if it is still alive somewhere, writes nothing over the retry.</td>
+</tr>
+<tr>
+<td><code>expire_lease(result_id)</code></td>
+<td>RUNNING</td>
+<td>Sets the lease's expiry into the past so the next reaper pass reclaims the task; a renewal that lands before that pass restores the lease, so read the result and call it again if needed. The task itself keeps running; the lease number refuses its finish write once another worker holds the row, so this brings the ordinary reclaim forward rather than cancelling anything. For a lease granted with a timeout that turned out to be wrong: the row carries its own deadline, so changing the setting on the workers does not move it.</td>
 </tr>
 <tr>
 <td><code>discard(result_id)</code></td>

@@ -833,24 +833,24 @@ and the table the queue lives in.</p>
 <p>Find your section below, then read <a href="#switching-over">Switching over</a>. That last
 part is where migrations go wrong.</p>
 <h2 id="from-another-djangotasks-backend">From another <code>django.tasks</code> backend</h2>
-<p>Configuration only. Here it is with <code>django-tasks-db</code>, the most common one:</p>
+<p>Configuration only. Here it is with <code>django-tasks-db</code>, the reference database backend:</p>
 <div class="highlight"><pre><span></span><code><span class="c1"># before</span>
-<span class="n">INSTALLED_APPS</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;django_tasks_db&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+<span class="n">INSTALLED_APPS</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"django_tasks_db"</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
 
 <span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_tasks_db.DatabaseBackend&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;QUEUES&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;default&quot;</span><span class="p">],</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_tasks_db.DatabaseBackend"</span><span class="p">,</span>
+        <span class="s2">"QUEUES"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"default"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># after</span>
-<span class="n">INSTALLED_APPS</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;django_ox&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+<span class="n">INSTALLED_APPS</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"django_ox"</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
 
 <span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;QUEUES&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;default&quot;</span><span class="p">],</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"QUEUES"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"default"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
@@ -944,13 +944,13 @@ already have, so there is no broker to run.</p>
 </tr>
 </tbody>
 </table>
-<p>One difference in behaviour is worth reading before you switch. With a broker,
+<p>One difference in behaviour to read before you switch. With a broker,
 <code>enqueue</code> leaves your process immediately. If the surrounding transaction then
 rolls back, a worker can pick up an order that no longer exists. The usual fix
 is to wrap every call in <code>transaction.on_commit()</code>.</p>
 <p>Here the enqueue is an <code>INSERT</code> on your own connection. It commits or rolls back
 with the row it belongs to, so there is nothing to wrap.</p>
-<p>Queues, priorities and <code>run_after</code> are what exist today. Celery's chains,
+<p>Queues, priorities and <code>run_after</code> map directly. Celery's chains,
 groups and chords, and routing across multiple brokers, are outside the
 package; chains and workflows are on the <a href="../pro/">Oxpull Pro</a> roadmap,
 undated.</p>
@@ -966,7 +966,7 @@ SQLite or Postgres. What changes is the API, and where schedules live.</p>
 <span class="k">def</span><span class="w"> </span><span class="nf">send_confirmation</span><span class="p">(</span><span class="n">order_id</span><span class="p">):</span> <span class="o">...</span>
 
 
-<span class="nd">@periodic_task</span><span class="p">(</span><span class="n">crontab</span><span class="p">(</span><span class="n">minute</span><span class="o">=</span><span class="s2">&quot;0&quot;</span><span class="p">,</span> <span class="n">hour</span><span class="o">=</span><span class="s2">&quot;3&quot;</span><span class="p">))</span>
+<span class="nd">@periodic_task</span><span class="p">(</span><span class="n">crontab</span><span class="p">(</span><span class="n">minute</span><span class="o">=</span><span class="s2">"0"</span><span class="p">,</span> <span class="n">hour</span><span class="o">=</span><span class="s2">"3"</span><span class="p">))</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">nightly_report</span><span class="p">():</span> <span class="o">...</span>
 </code></pre></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># after</span>
@@ -984,13 +984,13 @@ SQLite or Postgres. What changes is the API, and where schedules live.</p>
 </code></pre></div>
 <p>The schedule moves off the function and into settings:</p>
 <div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;OPTIONS&quot;</span><span class="p">:</span> <span class="p">{</span>
-            <span class="s2">&quot;SCHEDULES&quot;</span><span class="p">:</span> <span class="p">{</span>
-                <span class="s2">&quot;nightly-report&quot;</span><span class="p">:</span> <span class="p">{</span>
-                    <span class="s2">&quot;task&quot;</span><span class="p">:</span> <span class="s2">&quot;reports.tasks.nightly_report&quot;</span><span class="p">,</span>
-                    <span class="s2">&quot;cron&quot;</span><span class="p">:</span> <span class="s2">&quot;0 3 * * *&quot;</span><span class="p">,</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">"SCHEDULES"</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">"nightly-report"</span><span class="p">:</span> <span class="p">{</span>
+                    <span class="s2">"task"</span><span class="p">:</span> <span class="s2">"reports.tasks.nightly_report"</span><span class="p">,</span>
+                    <span class="s2">"cron"</span><span class="p">:</span> <span class="s2">"0 3 * * *"</span><span class="p">,</span>
                 <span class="p">},</span>
             <span class="p">},</span>
         <span class="p">},</span>
@@ -1045,13 +1045,13 @@ left to run it.</p>
 <p>No drain window available? Run both. Old workers keep serving the old table
 while new work goes to django-ox. They cannot see each other's rows.</p>
 <p>Both systems run tasks at least once, so your tasks should already be
-idempotent. Worth confirming before you start rather than halfway through.</p>
+idempotent. Confirm it before you start rather than halfway through.</p>
 <h2 id="migrating-away">Migrating away</h2>
 <p>Task functions are portable. django-ox adds nothing to the producer side, so
 tasks stay ordinary <code>django.tasks</code> tasks and moving to another backend is a
 settings change and a drain, run in the same order as above with the roles
 reversed.</p>
-<p>One behaviour does not travel, and it is worth deciding about on the way in
+<p>One behaviour does not travel, and it needs deciding on the way in
 rather than on the way out. Enqueueing inside <code>transaction.atomic()</code> ties the
 task to that transaction, so it disappears on rollback. A broker-based backend
 cannot do this: the enqueue leaves your process the moment you call it. Code

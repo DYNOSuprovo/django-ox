@@ -929,18 +929,18 @@
 <p>Everything django-ox reads lives in the standard <code>TASKS</code> setting, plus
 three management commands. A full entry with every option spelled out:</p>
 <div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;QUEUES&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;default&quot;</span><span class="p">,</span> <span class="s2">&quot;emails&quot;</span><span class="p">],</span>
-        <span class="s2">&quot;OPTIONS&quot;</span><span class="p">:</span> <span class="p">{</span>
-            <span class="s2">&quot;MAX_ATTEMPTS&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
-            <span class="s2">&quot;LOCK_TIMEOUT&quot;</span><span class="p">:</span> <span class="mi">300</span><span class="p">,</span>
-            <span class="s2">&quot;BACKOFF_INITIAL&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span>
-            <span class="s2">&quot;BACKOFF_MAX&quot;</span><span class="p">:</span> <span class="mi">600</span><span class="p">,</span>
-            <span class="s2">&quot;TASK_TIMEOUT&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>
-            <span class="s2">&quot;TASK_TIMEOUTS&quot;</span><span class="p">:</span> <span class="p">{},</span>
-            <span class="s2">&quot;TASK_TIMEOUT_GRACE&quot;</span><span class="p">:</span> <span class="mi">30</span><span class="p">,</span>
-            <span class="s2">&quot;SCHEDULES&quot;</span><span class="p">:</span> <span class="p">{},</span>  <span class="c1"># see the Recurring tasks page</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"QUEUES"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"default"</span><span class="p">,</span> <span class="s2">"emails"</span><span class="p">],</span>
+        <span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">"MAX_ATTEMPTS"</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
+            <span class="s2">"LOCK_TIMEOUT"</span><span class="p">:</span> <span class="mi">300</span><span class="p">,</span>
+            <span class="s2">"BACKOFF_INITIAL"</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span>
+            <span class="s2">"BACKOFF_MAX"</span><span class="p">:</span> <span class="mi">600</span><span class="p">,</span>
+            <span class="s2">"TASK_TIMEOUT"</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>
+            <span class="s2">"TASK_TIMEOUTS"</span><span class="p">:</span> <span class="p">{},</span>
+            <span class="s2">"TASK_TIMEOUT_GRACE"</span><span class="p">:</span> <span class="mi">30</span><span class="p">,</span>
+            <span class="s2">"SCHEDULES"</span><span class="p">:</span> <span class="p">{},</span>  <span class="c1"># see the Recurring tasks page</span>
         <span class="p">},</span>
     <span class="p">}</span>
 <span class="p">}</span>
@@ -948,8 +948,8 @@ three management commands. A full entry with every option spelled out:</p>
 <h2 id="the-smallest-working-entry">The smallest working entry</h2>
 <p>Every option has a default. This is enough to run tasks:</p>
 <div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
     <span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
@@ -995,7 +995,7 @@ retry. Add options when you have a reason to.</p>
 <tr>
 <td><code>MAX_ATTEMPTS</code></td>
 <td><code>3</code></td>
-<td>Executions a task gets before it is marked FAILED. An attempt is consumed when a worker claims the task, so a worker dying mid-run counts too and retries stay bounded.</td>
+<td>Claims a task gets before it is marked FAILED. The count is claims rather than invocations: it goes up in the statement that hands the task to a worker, before the function is reached. That is what keeps retries bounded when a worker dies mid-run, and it is what lets a task that loses its worker between the claim and the call use an attempt without running. See <a href="../production/#attempts-count-claims">Attempts count claims</a>.</td>
 </tr>
 <tr>
 <td><code>LOCK_TIMEOUT</code></td>
@@ -1026,6 +1026,11 @@ retry. Add options when you have a reason to.</p>
 <td><code>TASK_TIMEOUT_GRACE</code></td>
 <td><code>30</code></td>
 <td>Seconds a timed-out attempt gets to stop. A thread still running after that is treated as stuck, which usually means it is in a call that never returns to Python, where the exception cannot land: the worker records the attempt as failed, stops claiming, drains its other tasks and exits with code 75 so its supervisor restarts it. A task that catches <code>TaskTimeout</code> has the same deadline to return or raise, and so does a task on a watched thread, where nothing was raised at all.</td>
+</tr>
+<tr>
+<td><code>WORKER_CLASS</code></td>
+<td>unset</td>
+<td>Dotted path of a <code>django_ox.worker.Worker</code> subclass for <code>ox_worker</code> to run, on every process it starts. See <a href="../stability/">Stability</a>.</td>
 </tr>
 <tr>
 <td><code>SCHEDULES</code></td>
@@ -1102,9 +1107,9 @@ the command works from any working directory.</p>
 <p>Declare every queue on the backend, then give each worker a subset. Slow work
 stops blocking fast work without a second backend or a second database.</p>
 <div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;QUEUES&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;default&quot;</span><span class="p">,</span> <span class="s2">&quot;emails&quot;</span><span class="p">,</span> <span class="s2">&quot;exports&quot;</span><span class="p">],</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"QUEUES"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"default"</span><span class="p">,</span> <span class="s2">"emails"</span><span class="p">,</span> <span class="s2">"exports"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
@@ -1239,6 +1244,8 @@ alert are on the
   queue name. Every bad value is reported in one run.</li>
 <li><code>django_ox.E005</code>: a <code>TASK_TIMEOUTS</code> key names a queue that is not in
   <code>QUEUES</code>, so the entry would never apply.</li>
+<li><code>django_ox.E010</code>: <code>LOCK_TIMEOUT</code>, <code>BACKOFF_INITIAL</code> or <code>BACKOFF_MAX</code> is not a
+  positive, finite number of seconds. The worker reads all three, so the check stops a bad value at deploy time.</li>
 </ul>
 <p>The worker performs the same schedule and timeout validation at startup, so
 a bad deploy fails loudly rather than skipping dispatches.</p>

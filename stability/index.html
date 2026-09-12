@@ -861,8 +861,8 @@ export names this page does not list; those names are not public.</p>
   or recycled, 1 when a slot hit the restart cap, and otherwise with the
   first other non-zero worker code. A worker killed by a signal reports
   <code>128 + the signal number</code>, following the shell convention.</li>
-<li><strong>The system check IDs</strong> <code>django_ox.E001</code> through <code>django_ox.E005</code>, which
-  the configuration guide tells you to list in <code>SILENCED_SYSTEM_CHECKS</code>. The
+<li><strong>The system check IDs</strong>, the <code>django_ox.E0xx</code> identifiers, which
+  you may list in <code>SILENCED_SYSTEM_CHECKS</code>. The
   IDs are stable; the messages are not.</li>
 <li><strong><code>ox_health</code>'s exit codes</strong>: 0 when healthy, 1 when unhealthy or when an
   argument value is rejected. Argparse errors, such as an unknown flag, exit 2.</li>
@@ -872,7 +872,10 @@ export names this page does not list; those names are not public.</p>
   ahead of its ordering and its limit. The statement around it is not
   promised.</li>
 <li><strong>The timeout helpers</strong> <code>django_ox.deadline()</code> and <code>django_ox.remaining()</code>,
-  callable from inside a task.</li>
+  callable from inside a task. <code>deadline()</code> answers with a wall-clock time, and
+  <code>remaining()</code> with seconds measured on the same monotonic clock the worker
+  enforces the deadline with, so the two can differ by the size of a clock
+  correction. <code>remaining()</code> is the one the watchdog agrees with.</li>
 <li><strong>The metrics module</strong> <code>django_ox.stats</code>: <code>queue_stats</code>, <code>ready_count</code>,
   <code>oldest_ready_age</code>, <code>throughput</code>, <code>failure_rate</code>, <code>last_claim_age</code>, the
   <code>QueueStats</code> dataclass, and <code>DEFAULT_WINDOW</code>, the trailing window the
@@ -885,7 +888,8 @@ export names this page does not list; those names are not public.</p>
   <code>CONTENT_TYPE_OPENMETRICS</code> are the content types the view serves. A
   scraped name is a contract with every dashboard that reads it, so a
   rename is a breaking change. Help text is not part of the contract.</li>
-<li><strong>The actions module</strong> <code>django_ox.actions</code>: <code>retry</code> and <code>discard</code>, their
+<li><strong>The actions module</strong> <code>django_ox.actions</code>: <code>retry</code>, <code>discard</code> and
+  <code>expire_lease</code>, their
   accepted states, and their return values; <code>retry_many</code> and
   <code>discard_many</code>, the selections they accept and their <code>(changed, skipped)</code>
   return. <code>RETRYABLE_STATUSES</code> and <code>DISCARDABLE_STATUSES</code> are those
@@ -929,8 +933,8 @@ model's non-schema helper methods are not part of the contract.</p>
 <li><strong>Minor releases add, they do not break.</strong> Patch releases are bug fixes
   only.</li>
 </ul>
-<p>Pin accordingly: <code>django-ox~=1.0.0</code> accepts patch releases only;
-<code>django-ox~=1.0</code> accepts the current major line.</p>
+<p>Pin accordingly: <code>django-ox~=1.1.0</code> accepts patch releases only;
+<code>django-ox~=1.1</code> accepts the current major line.</p>
 <h2 id="deprecation-policy">Deprecation policy</h2>
 <p>When a public surface is going to be removed or changed incompatibly, and
 a compatible path exists, it is deprecated before removal rather than

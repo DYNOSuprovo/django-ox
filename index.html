@@ -908,8 +908,7 @@ the queue is a table, and there is no second datastore that can fail on its
 own.</p>
 <h2 id="transactional-enqueue">Transactional enqueue</h2>
 <p>The queue lives in your database, so enqueueing a task is a single INSERT
-on your default connection. That gives you a guarantee no broker-based
-queue can offer: <strong>the task and your data commit or roll back together.</strong></p>
+on your default connection. That gives you a guarantee a broker cannot offer: <strong>the task and your data commit or roll back together.</strong></p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">transaction</span>
 
 <span class="k">with</span> <span class="n">transaction</span><span class="o">.</span><span class="n">atomic</span><span class="p">():</span>
@@ -940,7 +939,7 @@ If the worker is killed, the lease goes stale. After <code>LOCK_TIMEOUT</code> (
 300 seconds) the reaper in any surviving worker takes the task back: to READY
 if attempts remain, or to LOST if they are spent. LOST reads as <code>FAILED</code>
 through the result API, so nothing waits forever on a worker that is not
-coming back. The mechanics, and the one case worth knowing about, are in
+coming back. The mechanics, and the one case to know about, are in
 <a href="production/#the-lease">Production</a>.</p>
 <h2 id="what-you-get">What you get</h2>
 <ul>
@@ -969,17 +968,17 @@ handles both.</p>
 <div class="highlight"><pre><span></span><code>pip install django-ox
 
 # on Django 5.2 LTS
-pip install &quot;django-ox[backport]&quot;
+pip install "django-ox[backport]"
 </code></pre></div>
 <p>Add the app and point the Tasks framework at the backend:</p>
 <div class="highlight"><pre><span></span><code><span class="n">INSTALLED_APPS</span> <span class="o">=</span> <span class="p">[</span>
     <span class="c1"># ...</span>
-    <span class="s2">&quot;django_ox&quot;</span><span class="p">,</span>
+    <span class="s2">"django_ox"</span><span class="p">,</span>
 <span class="p">]</span>
 
 <span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="p">{</span>
-        <span class="s2">&quot;BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;django_ox.backend.OxBackend&quot;</span><span class="p">,</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
     <span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
@@ -1023,21 +1022,21 @@ the producer side.</p>
 <h2 id="scope">Scope</h2>
 <p>The core is finite on purpose: a durable queue, a worker, recurring
 schedules, and monitoring, with nothing extra to operate. Design
-decisions worth knowing before you commit:</p>
+decisions to know before you commit:</p>
 <ul>
 <li>A queued task can be discarded before a worker claims it, and a failed
   one retried, from the admin or with <code>django_ox.actions</code>. <code>TASK_TIMEOUT</code>
   bounds how long any attempt may run; a particular running task cannot be
   interrupted on demand.</li>
-<li>Tasks are stored on the default database for the model; multi-database
-  routing is not part of the current scope.</li>
+<li>Every django-ox table lives on one database, the one your router sends
+<code>OxTask</code> to. A queue on a different database from the rows it refers to gives
+up the transactional enqueue.</li>
 <li>Worker concurrency is a thread pool, which fits I/O-bound tasks. For
   CPU-bound work, run <code>--processes N --concurrency 1</code>, which is N worker
   processes under one supervisor. See
   <a href="production/#threads-and-processes">Production</a>.</li>
 </ul>
-<p>Batches, unique tasks and rate limiting are in <a href="pro/">Oxpull Pro</a>, a paid
-add-on that is not on sale yet; the waitlist is at <a href="https://oxpull.com/">https://oxpull.com/</a>.
+<p>Batches, unique tasks and rate limiting are in <a href="pro/">Oxpull Pro</a>, a paid add-on; <a href="https://oxpull.com/">https://oxpull.com/</a> has the details.
 Metrics stay in this package: <code>django_ox.stats</code> and <code>ox_health</code> are free and
 stay free.</p>
 <h2 id="license">License</h2>

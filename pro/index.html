@@ -831,8 +831,7 @@ durable queue, transactional enqueue, retries, reaper, graceful drain,
 priorities, deferred tasks, recurring tasks and pruning are the free tier,
 permanently. Nothing that works today moves behind the paid tier.</p>
 <p><strong>Oxpull Pro</strong> is a paid add-on for three problems that show up once a queue
-is carrying real volume. All three are built and tested. It is not on sale
-yet. The waitlist below is how to hear when it opens.</p>
+is carrying real volume. All three are built and tested. <a href="https://oxpull.com/">https://oxpull.com/</a> has the details.</p>
 <p>Pro requires Django 6.0 or later. It builds on <code>django.tasks</code>, which is part
 of Django core from 6.0. django-ox itself also runs on Django 5.2 LTS through
 the <code>django-tasks</code> backport; Pro does not.</p>
@@ -875,8 +874,8 @@ PostgreSQL and MySQL 8. MariaDB 10.6+ takes the same claim path but is not
 part of the tested matrix. Batches have been measured to 1,000,000 members
 in a single batch on all three, with every count checked against the task
 rows rather than against what the API reports about itself.</p>
-<p>Sealing a batch that wide is cheap on SQLite and PostgreSQL and expensive
-on MySQL: about 34 ms, 0.7 s and 28 s respectively. Sealing takes a row
+<p>Sealing a batch that wide takes about 34 ms on SQLite, 0.7 s on PostgreSQL
+and 28 s on MySQL. Sealing takes a row
 lock per member on any database that offers one, and a million InnoDB
 locks in a single transaction is what that costs. Reconciling the same
 batch is 4.9 s on SQLite, 0.4 s on PostgreSQL and 7.3 s on MySQL, against
@@ -885,8 +884,7 @@ a reconciler that runs on a one-minute tick.</p>
 at <code>synchronous=NORMAL</code>, and stock PostgreSQL 16 and MySQL 8 images in
 Docker on localhost, each width against an empty database.</p>
 <h2 id="what-pro-is-not">What Pro is not</h2>
-<p>Workflows and chains are on the roadmap, undated. A web dashboard and
-encrypted payloads are not in Pro and are not dated. Rate limiting caps how
+<p>Workflows and chains are on the roadmap, undated. Rate limiting caps how
 often a task starts, not how many run at once; concurrency limiting is a
 different mechanism and is not in Pro. Metrics stay free: the stats API and
 the health command are in the open source package and remain there.</p>
@@ -895,7 +893,7 @@ the health command are in the open source package and remain there.</p>
 company. There is no licence key and no runtime check. A licence check would
 put a validation step in the path of code that has to keep running, and it
 does nothing for a company that has already paid. Nothing in the package
-phones home: no network call to us, and no telemetry. The credential controls
+phones home: no network call to Oxpull, and no telemetry. The credential controls
 access to the index rather than to code you have already installed, so if it
 lapses, what is deployed keeps running.</p>
 <h2 id="pricing">Pricing</h2>
@@ -905,9 +903,8 @@ term is 12 months and renews for successive 12-month terms unless you cancel.
 Cancel by writing to support@oxpull.com. Cancellation takes effect at the end
 of the period you have paid for.</p>
 <h2 id="waitlist">Waitlist</h2>
-<p>If Pro would earn its keep in your deployment, join the waitlist and say which
-of the three features matters to you. That ordering decides what gets built
-after these.</p>
+<p>If Pro would earn its keep in your deployment, say which of the three
+features matters to you. That ordering decides what gets built after these.</p>
 <p><a class="md-button" href="https://oxpull.com/#waitlist">Join the Pro waitlist</a></p>
 
 
