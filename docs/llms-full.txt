@@ -794,12 +794,24 @@ enable it, disable it, and run it once immediately.
 They cannot name a task you haven't exposed. The field is a list, not a text box,
 and a hand-written POST is refused too.
 
-That is the unusual part. In `django-celery-beat` the `PeriodicTask` model puts
-no `choices` or validators on its task field and defines no `clean()`, so
-`objects.create(task=...)` accepts anything; `django-q2` resolves its `func`
-column with `pydoc.locate` and calls the result. In both, change permission on
-the schedule table is close to permission to run arbitrary code. Here the code
-decides what is reachable and the row only picks from it.
+That is the unusual part. The two packages closest to this one both let a row
+name anything, and what that buys differs between them.
+
+In `django-q2` a `Schedule` row's `func` column is a plain text field, and the
+worker resolves whatever it holds with `pydoc.locate` and calls the result
+[^q2-func]. Change permission on that table is close to permission to run any
+importable callable.
+
+`django-celery-beat` is not the same. A `PeriodicTask` row's `task` column is
+free text too [^beat-task], but a Celery worker never imports what it finds
+there. It looks the name up in the registry of tasks it has already loaded, and
+a name that isn't in the registry is rejected as `NotRegistered`
+[^celery-names]. So change permission on that table is permission to run any
+task the application registered, with the arguments and the cadence of your
+choosing. That is a lot. It is not arbitrary code.
+
+Here a row names a registry key the code exposed, never an import path. The
+code decides what is reachable and the row picks from it.
 
 You can narrow it further. A registry entry may require a permission of its own:
 
@@ -1081,6 +1093,9 @@ The events worth alerting on. The full set, with every field, is on the
 `schedule_row_skipped` is the one to alert on. It usually means a task key was
 removed from the code while a row still names it.
 
+[^q2-func]: django-q2 1.11.1. `django_q/models.py`: `Schedule.func` is `models.CharField(max_length=256)` with no `choices` and no validators. `django_q/scheduler.py` passes the stored value to `async_task(s.func, ...)`, and `django_q/worker.py` runs `f = pydoc.locate(f)` and then `res = f(*task["args"], **task["kwargs"])`. The documentation describes the field as "the function to schedule. Dotted strings only." <https://django-q2.readthedocs.io/en/master/schedules.html>, checked 2026-09-12.
+[^beat-task]: django-celery-beat 2.9.0. `django_celery_beat/models.py`: `PeriodicTask.task` is `models.CharField(max_length=200)` with no `choices` and no validators, and the model defines no `clean()`. The documentation says periodic tasks "can be managed from the Django Admin interface". <https://django-celery-beat.readthedocs.io/en/latest/>, checked 2026-09-12.
+[^celery-names]: Celery 5.6.3, "Tasks", under "Names": "When tasks are sent, no actual function code is sent with it, just the name of the task to execute. When the worker then receives the message it can look up the name in its task registry to find the execution code." <https://docs.celeryq.dev/en/stable/userguide/tasks.html>. In the code, `celery/app/registry.py` is a `dict` whose `__missing__` raises `NotRegistered`, and `celery/worker/consumer/consumer.py` builds its strategies from `app.tasks` alone, sending a miss to `on_unknown_task`, which rejects the message and marks it failed with `NotRegistered`. The periodic-task page adds that the stored name "is not the import path of the task, even though the default naming pattern is built like it is" <https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html>. Both pages checked 2026-09-12.
 [^k8s-suspend]: Kubernetes, "CronJob", under "Schedule suspension": "When `.spec.suspend` changes from `true` to `false` on an existing CronJob without a starting deadline, the missed Jobs are scheduled immediately." <https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#schedule-suspension>, checked 2026-09-12.
 [^quartz-resume]: Quartz 2.3.0 API, `Scheduler.resumeTrigger`: "If the `Trigger` missed one or more fire-times, then the `Trigger`'s misfire instruction will be applied." The same sentence is on `resumeJob`, `resumeTriggers` and `resumeAll`. <https://www.quartz-scheduler.org/api/2.3.0/org/quartz/Scheduler.html>, checked 2026-09-12.
 [^quartz-cron]: Quartz 2.3.0 tutorial, lesson 6, "CronTrigger Misfire Instructions": the smart policy "is also the default for all trigger types" and "is interpreted by CronTrigger as MISFIRE_INSTRUCTION_FIRE_NOW". The `CronTrigger` API names that constant `MISFIRE_INSTRUCTION_FIRE_ONCE_NOW`: "upon a mis-fire situation, the CronTrigger wants to be fired now by Scheduler." <https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/tutorial-lesson-06.html>, checked 2026-09-12.
