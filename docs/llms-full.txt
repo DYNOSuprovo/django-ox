@@ -2633,7 +2633,7 @@ The message text is not part of the contract. The keys are.
 | `schedule_row_skipped` | WARNING | A stored schedule could not be used: its task key is not registered, its arguments no longer validate, or its timing does not parse. The others in the same pass still run. Carries `reason`. |
 | `schedule_dispatch_error` | ERROR | One schedule raised something unexpected: its task would not enqueue, its row raised. The rest of the pass continues. Not a database error; those end the pass as `schedule_dispatch_failed`. |
 | `schedule_dispatch_callback_failed` | WARNING | A `transaction.on_commit` callback registered by a `task_enqueued` receiver raised after the dispatch transaction committed. The task is enqueued, the tick is recorded and the dispatch is counted; the failure is the callback's. Carries `task_id`. |
-| `schedule_dispatch_failed` | WARNING | The dispatch pass hit a database error, wherever in the pass it was raised. The pass is abandoned and retried on the next one; a connection that is no longer usable is dropped, and the claim still runs. |
+| `schedule_dispatch_failed` | WARNING | The dispatch pass hit a database error, wherever in the pass it was raised; the stored source's marker read and boundary heal are the exceptions, with events of their own below. The pass is abandoned and retried on the next one; a connection that is no longer usable is dropped, and the claim still runs. |
 | `schedule_source_unavailable` | WARNING | The stored schedules could not be read, so the worker is running on the set it last read rather than on none. |
 | `schedule_lock_unavailable` | WARNING | The database gave up waiting for a lock another worker held: a stored schedule's row, or the tick row a settings-declared schedule's dispatch claims. MySQL's lock-wait timeout or a deadlock it resolved against this worker, SQLite's busy timeout, PostgreSQL's `lock_timeout`. The schedule is skipped this pass and its tick fires on a later one if still unclaimed. No traceback; a stream of it means one worker's dispatch transactions are long, which is usually a slow `task_enqueued` receiver. |
 | `schedule_boundary_healed` | INFO | A stored schedule's timing had changed without its activation boundary moving, so the boundary was moved onto the current timing. Expected after a bulk update; repeated for one schedule is not. |
@@ -3638,7 +3638,9 @@ for your engine.
   uncommitted row. The later instant was then claimed with no task, and the
   run it was for never happened. A pass that reads no history now takes a
   per-schedule latch inside its transaction before it decides, so the second
-  worker waits, sees the anchor, and fires. Present in 1.1.0.
+  worker waits, sees the anchor, and fires. The latch is a tick row at an
+  instant no trigger produces, 1900-01-01, written and deleted inside the
+  transaction, so nothing ever reads it. Present in 1.1.0.
 - The tick read at the start of a dispatch pass fits the database's
   parameter limit. It names every schedule in one `IN` list, and SQLite
   before 3.32.0 refuses a statement with more than 999 parameters, so a

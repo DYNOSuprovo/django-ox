@@ -12,9 +12,10 @@ whose boundary already existed and which should have fired, and the unique
 constraint then suppresses that instant for good.
 """
 
+import logging
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from django.db import connection
@@ -170,6 +171,34 @@ class TestASecondAnchorDoesNotSwallowATick:
             assert len(reads) == 1, f"pass {minutes}: {len(reads)} first-sighting reads"
 
 
+class TestAScheduleWhoseFirstTickIsTheEpoch:
+    """
+    An interval trigger counts from the epoch, so an interval longer than
+    the time since it puts the schedule's first and only tick exactly
+    there. The latch used to be written at the epoch too, and this pass's
+    own tick row then held the unique index against it: an IntegrityError
+    on every pass, logged as a dispatch error, and a schedule that never
+    anchored. In UTC, because the tick is derived in the project's zone and
+    the collision needs the two instants to coincide.
+    """
+
+    def test_it_anchors_cleanly(self, settings, caplog):
+        from django.utils import timezone as tz
+
+        settings.TASKS = tasks_setting(
+            {"century": {"task": "tests.tasks.add", "every": 3600 * 24 * 365 * 100}}
+        )
+        with tz.override("UTC"), caplog.at_level(logging.WARNING, logger="django_ox"):
+            assert Worker(backoff_initial=0).dispatch_schedules() == 0
+            assert Worker(backoff_initial=0).dispatch_schedules() == 0
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING], (
+            "the latch collided with the schedule's own tick row"
+        )
+        (row,) = OxScheduleTick.objects.all()
+        assert row.task_id is None, "anchored, not fired"
+        assert row.scheduled_for.replace(tzinfo=None) == datetime(1970, 1, 1)
+
+
 class _ThreadClock:
     """timezone.now() answered per thread, so two workers run at once at
     different instants without a global patch that each would overwrite."""
@@ -194,11 +223,11 @@ def _is_first_sighting_read(sql):
 
 
 def _is_latch_insert(sql, params):
-    # The latch row is the only tick ever written at the epoch.
+    # The latch row is the only tick ever written at the latch instant.
     return (
         sql.lstrip().upper().startswith("INSERT")
         and "oxscheduletick" in sql
-        and any("1970-01-01" in str(param) for param in params or ())
+        and any("1900-01-01" in str(param) for param in params or ())
     )
 
 

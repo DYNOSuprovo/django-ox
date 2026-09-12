@@ -168,7 +168,9 @@ for your engine.
   uncommitted row. The later instant was then claimed with no task, and the
   run it was for never happened. A pass that reads no history now takes a
   per-schedule latch inside its transaction before it decides, so the second
-  worker waits, sees the anchor, and fires. Present in 1.1.0.
+  worker waits, sees the anchor, and fires. The latch is a tick row at an
+  instant no trigger produces, 1900-01-01, written and deleted inside the
+  transaction, so nothing ever reads it. Present in 1.1.0.
 - The tick read at the start of a dispatch pass fits the database's
   parameter limit. It names every schedule in one `IN` list, and SQLite
   before 3.32.0 refuses a statement with more than 999 parameters, so a

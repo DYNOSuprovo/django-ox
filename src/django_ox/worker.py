@@ -214,12 +214,18 @@ def _latch_instant() -> datetime:
     """
     The fixed instant a first-sighting latch row is written at.
 
-    The epoch: before any tick a schedule can be due at, so it never falls
-    inside the bounded tick read, and inside every supported database's
-    datetime range. Naive or aware to match USE_TZ, as every other tick is.
+    Before any tick a schedule can be due at, so the latch never collides
+    with this pass's own tick row and never falls inside the bounded tick
+    read, and inside every supported database's datetime range. Not the
+    epoch: an interval trigger counts from the epoch, so an interval
+    longer than the time since it puts a schedule's first tick exactly
+    there, and a latch at the same instant lost the unique index to the
+    tick row on every pass. A cron trigger looks back nine years at most,
+    and an interval tick is at or after the epoch in the project's zone.
+    Naive or aware to match USE_TZ, as every other tick is.
     """
-    epoch = datetime(1970, 1, 1)
-    return epoch.replace(tzinfo=UTC) if settings.USE_TZ else epoch
+    instant = datetime(1900, 1, 1)
+    return instant.replace(tzinfo=UTC) if settings.USE_TZ else instant
 
 
 @dataclass(slots=True)
