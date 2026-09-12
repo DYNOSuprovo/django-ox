@@ -34,7 +34,7 @@ from . import registry
 from .compat import normalize_json
 from .cron import CronExpression
 from .models import OxSchedule, OxScheduleChange
-from .schedules import STORED_KEY_PREFIX
+from .schedules import STORED_KEY_PREFIX, lock_contention
 
 logger = logging.getLogger("django_ox")
 
@@ -616,13 +616,18 @@ class DatabaseScheduleSource:
         """
         try:
             row = _lock_row(pk, db_alias)
-        except DatabaseError:
+        except DatabaseError as exc:
             # A lock-wait timeout, or SQLite reporting the database busy.
-            # One schedule's contention must not end the pass for the rest.
+            # One schedule's contention must not end the pass for the rest,
+            # and it is contention, so no traceback. Anything else the
+            # database raises is the database's, and the pass reports it.
+            if not lock_contention(exc):
+                raise
             logger.warning(
-                "Could not lock stored schedule %s; skipping it this pass",
+                "Could not lock stored schedule %s this pass, the database gave "
+                "up waiting for a lock: %s",
                 pk,
-                exc_info=True,
+                exc,
                 extra={"event": "schedule_lock_unavailable", "schedule_pk": pk},
             )
             return None

@@ -18,6 +18,7 @@ from django.db import DatabaseError, OperationalError, connection
 from django.utils import timezone
 
 from django_ox.models import OxScheduleTick, OxTask
+from django_ox.schedules import lock_contention
 from django_ox.worker import Worker
 
 pytestmark = pytest.mark.django_db
@@ -132,4 +133,130 @@ class TestRunReportsAFailedPassAndCarriesOn:
         assert len(events(caplog, "schedule_dispatched")) == len(TWO), (
             "the pass after the failure did not dispatch"
         )
+        assert not events(caplog, "schedule_dispatch_error")
+
+
+class _PgLockNotAvailable(Exception):
+    """The shape psycopg gives a lock_timeout: an SQLSTATE on the cause."""
+
+    sqlstate = "55P03"
+
+
+def _with_cause(exc, cause):
+    exc.__cause__ = cause
+    return exc
+
+
+LOCK_CONTENTION = {
+    "mysql-lock-wait": OperationalError(
+        1205, "Lock wait timeout exceeded; try restarting transaction"
+    ),
+    "mysql-deadlock": OperationalError(
+        1213, "Deadlock found when trying to get lock; try restarting transaction"
+    ),
+    "sqlite-busy": OperationalError("database is locked"),
+    "postgres-lock-timeout": _with_cause(
+        OperationalError("canceling statement due to lock timeout"),
+        _PgLockNotAvailable(),
+    ),
+}
+
+
+class TestALockTheDatabaseGaveUpOnIsContentionNotAFault:
+    @pytest.mark.parametrize("shape", list(LOCK_CONTENTION), ids=list(LOCK_CONTENTION))
+    def test_the_classifier_reads_each_databases_shape(self, shape):
+        assert lock_contention(LOCK_CONTENTION[shape])
+
+    @pytest.mark.parametrize(
+        "other",
+        [
+            OperationalError("server closed the connection unexpectedly"),
+            OperationalError(2006, "MySQL server has gone away"),
+            OperationalError("no such table: django_ox_oxscheduletick"),
+        ],
+        ids=["postgres-gone", "mysql-gone", "sqlite-missing-table"],
+    )
+    def test_anything_else_is_not(self, other):
+        assert not lock_contention(other)
+
+    @pytest.mark.parametrize("shape", list(LOCK_CONTENTION), ids=list(LOCK_CONTENTION))
+    def test_it_is_one_warning_without_a_traceback_and_the_pass_goes_on(
+        self, worker, caplog, shape
+    ):
+        with_history()
+        with (
+            caplog.at_level(logging.WARNING, logger="django_ox"),
+            connection.execute_wrapper(
+                raising_on_tick_insert(LOCK_CONTENTION[shape], times=1)
+            ),
+        ):
+            assert worker.dispatch_schedules() == 1, "the other schedule must fire"
+        warned = events(caplog, "schedule_lock_unavailable")
+        assert len(warned) == 1
+        assert warned[0].exc_info is None, "contention is not a traceback"
+        assert not events(caplog, "schedule_dispatch_error")
+        assert not events(caplog, "schedule_dispatch_failed")
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAMySQLLockWaitTimeoutOnTheTickRow:
+    """
+    The real thing on MySQL: the winner holds its transaction past the
+    loser's lock-wait timeout, so the loser's unique INSERT ends in 1205
+    rather than in the IntegrityError the loop reads as a lost race.
+    """
+
+    def test_the_loser_warns_once_and_the_winners_task_stands(self, worker, caplog):
+        if connection.vendor != "mysql":
+            pytest.skip("innodb_lock_wait_timeout is MySQL's")
+        with_history()
+        winner_inserted, release = threading.Event(), threading.Event()
+        out = {}
+
+        def hold_after_the_tick_insert(execute, sql, params, many, context):
+            result = execute(sql, params, many, context)
+            if sql.lstrip().upper().startswith("INSERT") and "oxscheduletick" in sql:
+                winner_inserted.set()
+                release.wait(timeout=10)
+            return result
+
+        def winner():
+            try:
+                with connection.execute_wrapper(hold_after_the_tick_insert):
+                    out["winner"] = Worker(backoff_initial=0).dispatch_schedules()
+            except BaseException as exc:
+                out["winner"] = exc
+            finally:
+                connection.close()
+
+        def loser():
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SET SESSION innodb_lock_wait_timeout = 1")
+                out["loser"] = Worker(backoff_initial=0).dispatch_schedules()
+            except BaseException as exc:
+                out["loser"] = exc
+            finally:
+                connection.close()
+
+        first = threading.Thread(target=winner)
+        second = threading.Thread(target=loser)
+        with caplog.at_level(logging.WARNING, logger="django_ox"):
+            first.start()
+            assert winner_inserted.wait(timeout=10)
+            second.start()
+            second.join(timeout=30)
+            release.set()
+            first.join(timeout=30)
+        assert not first.is_alive() and not second.is_alive()
+        raised = [v for v in out.values() if isinstance(v, BaseException)]
+        assert not raised, raised
+        # The loser timed out on the first schedule's tick and went on to
+        # the second, which it won while the winner was still held; each
+        # tick fired exactly once between them.
+        assert out["winner"] + out["loser"] == len(TWO), out
+        assert OxTask.objects.count() == len(TWO)
+        warned = events(caplog, "schedule_lock_unavailable")
+        assert [r.schedule for r in warned] == ["one"], [r.getMessage() for r in warned]
+        assert warned[0].exc_info is None, "contention is not a traceback"
         assert not events(caplog, "schedule_dispatch_error")

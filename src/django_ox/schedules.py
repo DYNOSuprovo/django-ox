@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.db import DatabaseError
 from django.utils.module_loading import import_string
 
 from .compat import InvalidTask, Task, normalize_json
@@ -278,6 +279,34 @@ def schedule_names_folding_together(backend_alias: str) -> list[tuple[str, str]]
             else:
                 seen.setdefault(folded, name)
     return clashes
+
+
+def lock_contention(exc: DatabaseError) -> bool:
+    """
+    Was this raised because the database gave up waiting for a lock?
+
+    A lock held by another worker's transaction is what the dispatch path
+    expects to meet: a row lock on a stored schedule, or the unique tick
+    row another dispatcher has inserted and not yet committed. Ordinarily
+    the wait ends when that transaction does. Past the engine's patience
+    it ends in an error instead, and that error is contention, not a fault
+    in the schedule and not the database going away: MySQL reports a
+    lock-wait timeout (1205) or a deadlock it resolved against this
+    transaction (1213), SQLite reports the database locked once its busy
+    timeout runs out, and PostgreSQL reports lock_not_available (55P03)
+    when a lock_timeout is set or deadlock_detected (40P01).
+
+    Read off the driver's own error, which Django keeps as the cause:
+    MySQL drivers put the numeric code first in the arguments, psycopg
+    carries the SQLSTATE, and SQLite has only the message.
+    """
+    if exc.args and exc.args[0] in (1205, 1213):
+        return True
+    cause = exc.__cause__
+    sqlstate = getattr(cause, "sqlstate", None) or getattr(cause, "pgcode", None)
+    if sqlstate in ("55P03", "40P01"):
+        return True
+    return "database is locked" in str(exc)
 
 
 def _as_interval(value: Any, prefix: str, key: str) -> timedelta:

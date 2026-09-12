@@ -132,6 +132,13 @@ again. `sqlmigrate django_ox 0007` prints the statements for your engine.
   in hand as `schedule_dispatch_error`, with a traceback, while the pass
   reported success. Anything else one schedule raises is still logged against
   that schedule and the rest of the pass continues.
+- A lock the database gave up waiting for, MySQL's lock-wait timeout or a
+  deadlock it resolved against this worker, SQLite's busy timeout,
+  PostgreSQL's `lock_timeout`, is logged once as `schedule_lock_unavailable`
+  without a traceback, and the schedule is skipped this pass. On a
+  settings-declared schedule's tick it was logged as
+  `schedule_dispatch_error` with a traceback, as though the schedule were
+  broken; it is a lost race with a slow winner.
 
 ### Fixed
 

@@ -257,7 +257,7 @@ The message text is not part of the contract. The keys are.
 | `schedule_dispatch_error` | ERROR | One schedule raised something unexpected: its task would not enqueue, its row raised. The rest of the pass continues. Not a database error; those end the pass as `schedule_dispatch_failed`. |
 | `schedule_dispatch_failed` | WARNING | The dispatch pass hit a database error, wherever in the pass it was raised. The pass is abandoned and retried on the next one; a connection that is no longer usable is dropped, and the claim still runs. |
 | `schedule_source_unavailable` | WARNING | The stored schedules could not be read, so the worker is running on the set it last read rather than on none. |
-| `schedule_lock_unavailable` | WARNING | A stored schedule's row could not be locked in time, so it was skipped this pass. |
+| `schedule_lock_unavailable` | WARNING | The database gave up waiting for a lock another worker held: a stored schedule's row, or the tick row a settings-declared schedule's dispatch claims. MySQL's lock-wait timeout or a deadlock it resolved against this worker, SQLite's busy timeout, PostgreSQL's `lock_timeout`. The schedule is skipped this pass and its tick fires on a later one if still unclaimed. No traceback; a stream of it means one worker's dispatch transactions are long, which is usually a slow `task_enqueued` receiver. |
 | `schedule_boundary_healed` | INFO | A stored schedule's timing had changed without its activation boundary moving, so the boundary was moved onto the current timing. Expected after a bulk update; repeated for one schedule is not. |
 | `schedule_boundary_heal_failed` | WARNING | That move failed and will be retried. |
 | `worker_error` | ERROR | The execution wrapper itself raised (an internal worker error, not a task failure). |
@@ -295,8 +295,8 @@ The message text is not part of the contract. The keys are.
 | `count` | `task_reclaimed` without `task_id` | How many tasks that pass reclaimed. Present only on the batch record described above. |
 | `held_by` | `task_reclaimed` | The worker that stopped refreshing the lock, from the row. `worker_id` on the same record is the reaper that noticed. Absent on the batch record, along with `task_id`, `task_path`, `queue` and `attempt`. |
 | `dropped_status` | `task_lease_lost` | Status the dropped write would have set: `SUCCESSFUL`, `FAILED` or `READY`. |
-| `schedule` | `schedule_dispatched`, `schedule_row_skipped`, `schedule_dispatch_error`, `schedule_tick_dropped` | The schedule's name, from `SCHEDULES` or from its row. |
-| `schedule_pk` | `schedule_row_skipped`, `schedule_lock_unavailable`, `schedule_boundary_healed` | The stored schedule's row id. Absent for a settings-declared schedule, which has no row. |
+| `schedule` | `schedule_dispatched`, `schedule_row_skipped`, `schedule_dispatch_error`, `schedule_tick_dropped`, `schedule_lock_unavailable` for a settings-declared schedule | The schedule's name, from `SCHEDULES` or from its row. |
+| `schedule_pk` | `schedule_row_skipped`, `schedule_lock_unavailable` for a stored schedule, `schedule_boundary_healed` | The stored schedule's row id. Absent for a settings-declared schedule, which has no row. |
 | `scheduled_for`, `late_seconds` | `schedule_tick_dropped` | The tick that was dropped, and how late it was when the deadline rejected it. |
 | `reason` | `schedule_row_skipped` | Why the row could not be used. |
 | `queues`, `concurrency` | `worker_started` | The worker's configuration. |

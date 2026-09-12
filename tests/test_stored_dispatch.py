@@ -613,6 +613,63 @@ class TestTheDeadlineIsJudgedUnderTheLock:
         assert OxTask.objects.count() == 1
 
 
+class TestTheRowLockDistinguishesContentionFromTheDatabase:
+    """
+    The stored source skips a schedule whose row lock the database gave up
+    waiting for, and only that. A connection gone away at the same
+    statement is the database's failure, and it ends the pass so run()
+    reports it and drops the connection.
+    """
+
+    def _lock_row_raising(self, monkeypatch, exc):
+        from django_ox import stored
+
+        def lock_row(pk, alias):
+            raise exc
+
+        monkeypatch.setattr(stored, "_lock_row", lock_row)
+
+    def test_a_lock_the_database_gave_up_on_skips_the_schedule(
+        self, worker, monkeypatch, caplog
+    ):
+        import logging
+
+        from django.db import OperationalError
+
+        a_minutely()
+        self._lock_row_raising(monkeypatch, OperationalError("database is locked"))
+        with caplog.at_level(logging.WARNING, logger="django_ox"):
+            assert worker.dispatch_schedules() == 0
+        warned = [
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) == "schedule_lock_unavailable"
+        ]
+        assert len(warned) == 1
+        assert warned[0].exc_info is None, "contention is not a traceback"
+
+    def test_a_connection_gone_away_at_the_lock_ends_the_pass(
+        self, worker, monkeypatch, caplog
+    ):
+        import logging
+
+        from django.db import DatabaseError, OperationalError
+
+        a_minutely()
+        self._lock_row_raising(
+            monkeypatch, OperationalError("server closed the connection unexpectedly")
+        )
+        with (
+            caplog.at_level(logging.WARNING, logger="django_ox"),
+            pytest.raises(DatabaseError),
+        ):
+            worker.dispatch_schedules()
+        assert not any(
+            getattr(r, "event", None) == "schedule_lock_unavailable"
+            for r in caplog.records
+        ), "a dead connection was reported as lock contention"
+
+
 class TestTheWriteApiCannotLoseAnUpdate:
     def test_a_stale_instance_cannot_undo_a_resume(self):
         # Editor A holds a copy, editor B pauses and resumes, then A saves an

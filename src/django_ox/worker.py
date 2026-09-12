@@ -26,6 +26,7 @@ from django.db import (
     DatabaseError,
     Error,
     IntegrityError,
+    OperationalError,
     close_old_connections,
     connections,
     router,
@@ -54,6 +55,7 @@ from .exceptions import TaskAbandoned, TaskTimeout
 from .models import OxScheduleTick, OxTask
 from .schedules import (
     Schedule,
+    lock_contention,
     schedule_name_collisions,
     schedule_source_from_options,
 )
@@ -2434,6 +2436,28 @@ class Worker:
                             "worker_id": self.worker_id,
                         },
                     )
+                continue
+            except OperationalError as exc:
+                # The database gave up waiting for a lock: another worker
+                # held this tick's unique row, or the schedule's row, for
+                # longer than the engine's patience. That is a lost race
+                # with a slow winner, not a broken schedule, so it is one
+                # warning without a traceback, and the tick fires on a later
+                # pass if it is still unclaimed. The stored source treats a
+                # timeout on its own row lock the same way.
+                if not lock_contention(exc):
+                    raise
+                logger.warning(
+                    "Could not claim schedule %s this pass, the database gave up "
+                    "waiting for a lock: %s",
+                    schedule.name,
+                    exc,
+                    extra={
+                        "event": "schedule_lock_unavailable",
+                        "schedule": schedule.name,
+                        "worker_id": self.worker_id,
+                    },
+                )
                 continue
             except DatabaseError:
                 # The database, not the schedule: a connection gone away, a
