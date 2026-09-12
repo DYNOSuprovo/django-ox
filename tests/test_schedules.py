@@ -701,7 +701,22 @@ class TestACustomSourceIsHeldToTheSameTickCheck:
             # The same schedule, retimed. Its latest tick is no longer the
             # instant the snapshot planned, and nothing else about it moved:
             # no boundary, no digest, no end time.
-            return replace(holder["schedule"], trigger=CronExpression("0 3 * * *"))
+            #
+            # The retiming is half a minute off the grid rather than another
+            # cron expression, because no cron expression can do this job.
+            # Cron ticks are floored to a whole minute, so any cron retiming
+            # answers the minutely snapshot's own instant throughout the
+            # minute it fires in: "0 3 * * *" agrees with "* * * * *" for the
+            # whole of 03:00, and this test then failed on the wall clock one
+            # minute a day. An interval phased 30 seconds past the epoch ticks
+            # at :30 of a minute and never at :00, so it disagrees with a
+            # minutely cron tick at every instant there is.
+            return replace(
+                holder["schedule"],
+                trigger=IntervalTrigger(
+                    every=timedelta(minutes=1), phase=timedelta(seconds=30)
+                ),
+            )
 
         holder["schedule"] = Schedule(
             name="minutely",
