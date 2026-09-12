@@ -171,7 +171,10 @@ for your engine.
   apart by whether this pass's own tick row had gone in.
 - A `transaction.on_commit` callback that raises after a dispatch commits is
   logged as `schedule_dispatch_callback_failed`, with the task id, and the
-  dispatch is counted, since the task exists and the tick is recorded. In
+  dispatch is counted, since the task exists and the tick is recorded,
+  whatever the callback raised: a database error from a callback's own
+  statement is the callback's too, not a lost race or a fault that ends
+  the pass. In
   1.1.0 the exception left the dispatch pass with the task committed and,
   unless it was a database error, left `run()` too and stopped the worker.
   The stored-schedules page states the lock order a `task_enqueued` receiver

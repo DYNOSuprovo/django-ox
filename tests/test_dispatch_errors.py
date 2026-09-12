@@ -14,7 +14,13 @@ import time
 from datetime import timedelta
 
 import pytest
-from django.db import DatabaseError, OperationalError, connection, transaction
+from django.db import (
+    DatabaseError,
+    IntegrityError,
+    OperationalError,
+    connection,
+    transaction,
+)
 from django.utils import timezone
 
 from django_ox.compat import task_enqueued
@@ -276,11 +282,30 @@ class TestAPostCommitCallbackThatRaises:
     actually runs; inside a test transaction it would be deferred.
     """
 
-    def test_the_dispatch_is_counted_and_the_callback_reported(self, worker, caplog):
+    @pytest.mark.parametrize(
+        "raised",
+        [
+            RuntimeError("the callback failed after the commit"),
+            IntegrityError("duplicate key in the receiver's own table"),
+            OperationalError("server closed the connection unexpectedly"),
+            OperationalError(
+                1205, "Lock wait timeout exceeded; try restarting transaction"
+            ),
+            DatabaseError("the receiver's own statement failed"),
+        ],
+        ids=["plain", "integrity", "operational", "contention-shaped", "database"],
+    )
+    def test_the_dispatch_is_counted_and_the_callback_reported(
+        self, worker, caplog, raised
+    ):
+        # Every class, not only a plain one. A callback that does database
+        # work of its own raises database errors, and read by class those
+        # are a lost race, contention, or a fault that ends the pass: the
+        # committed task went uncounted, or the rest of the pass was lost.
         with_history()
 
         def failing_after_commit():
-            raise RuntimeError("the callback failed after the commit")
+            raise raised
 
         def receiver(sender, task_result, **kwargs):
             transaction.on_commit(failing_after_commit)
@@ -303,3 +328,25 @@ class TestAPostCommitCallbackThatRaises:
         }
         assert len(events(caplog, "schedule_dispatched")) == len(TWO)
         assert not events(caplog, "schedule_dispatch_error")
+
+    def test_a_commit_that_fails_is_not_a_callback_failure(
+        self, worker, caplog, monkeypatch
+    ):
+        # The body ran to its end and then the COMMIT itself failed. Nothing
+        # is committed, so nothing is counted and nothing is a callback's:
+        # the error is the database's and ends the pass.
+        with_history()
+        commit = connection._commit
+
+        def failing_commit():
+            monkeypatch.setattr(connection, "_commit", commit)
+            raise OperationalError("server closed the connection unexpectedly")
+
+        monkeypatch.setattr(connection, "_commit", failing_commit)
+        with (
+            caplog.at_level(logging.INFO, logger="django_ox"),
+            pytest.raises(DatabaseError),
+        ):
+            worker.dispatch_schedules()
+        assert not events(caplog, "schedule_dispatched")
+        assert not events(caplog, "schedule_dispatch_callback_failed")

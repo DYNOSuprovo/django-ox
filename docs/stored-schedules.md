@@ -333,8 +333,8 @@ Worth knowing before you turn it on:
   ends one of the two, and the tick is retried on the next pass. Keep receivers
   to work that locks nothing a schedule-writing transaction may hold, and put
   anything else in `transaction.on_commit`. A callback registered that way that
-  raises is logged as `schedule_dispatch_callback_failed`; the task it followed
-  is enqueued and counted.
+  raises, whatever it raises, is logged as `schedule_dispatch_callback_failed`;
+  the task it followed is enqueued and counted.
 
 ## Monitoring
 
