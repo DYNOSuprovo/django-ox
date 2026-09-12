@@ -2205,6 +2205,12 @@ class Worker:
         way as one changed through the admin, because the answer comes from
         the columns rather than from anything a write path remembered to
         update.
+
+        `local_now` is the snapshot the tick was derived from, so the tick
+        recomputed here is the one the caller holds. `now` is the clock as
+        it stands when the question is asked, which under the row's lock is
+        later than the snapshot by however long the lock took; the deadline
+        is judged against that.
         """
         tick = current.trigger.previous(local_now)
         if tick is None:
@@ -2318,8 +2324,18 @@ class Worker:
                     current = (
                         schedule.refresh() if schedule.refresh is not None else schedule
                     )
+                    # The clock again, now that the lock is held. Waiting
+                    # for it takes as long as whoever holds it: another
+                    # dispatcher's enqueue and its receivers, an admin save,
+                    # up to the lock-wait timeout on MySQL. The starting
+                    # deadline is a promise about how late a run may begin,
+                    # and a clock read before the wait cannot keep it. The
+                    # tick itself is still the snapshot's: which instant is
+                    # due comes from the timing, not from when the lock was
+                    # granted.
+                    admitted_at = timezone.now()
                     if current is None or not self._still_due(
-                        current, scheduled_for, local_now, now
+                        current, scheduled_for, local_now, admitted_at
                     ):
                         raise _NotAdmitted
                     result = None

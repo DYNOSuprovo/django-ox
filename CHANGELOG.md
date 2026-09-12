@@ -56,7 +56,10 @@ again. `sqlmigrate django_ox 0007` prints the statements for your engine.
   there is a silent no-op.
 - `start_time` and `end_time` bound which ticks of a stored schedule fire, and
   `starting_deadline_seconds` drops a tick that is later than the deadline
-  rather than running it however stale. The default is no deadline, which is
+  rather than running it however stale. The deadline is judged under the
+  row's lock, after any wait for it, so a tick that crossed it while another
+  worker or an admin save held the row is dropped rather than run late. The
+  default is no deadline, which is
   the behaviour settings-declared schedules have always had. A dropped tick
   logs `schedule_tick_dropped` with its lateness, so it can be alerted on
   instead of vanishing.

@@ -554,6 +554,65 @@ class TestTheBoundaryMustMatchTheTiming:
         assert worker.dispatch_schedules() == 0
 
 
+class TestTheDeadlineIsJudgedUnderTheLock:
+    """
+    The starting deadline is a promise about how late a run may begin.
+
+    A pass samples the clock once before its loop and then waits for the
+    row's lock inside the transaction: for another dispatcher's enqueue and
+    its receivers, for an admin save, up to the lock-wait timeout on MySQL.
+    A tick inside its deadline at that first sample can be past it by the
+    time the lock is granted, and judged against the first sample it was
+    enqueued late. The clock is read again under the lock.
+
+    The wait is stood in for by a lock that moves the clock: what the test
+    pins is the order, that the deadline is judged after the lock and not
+    before it, which a real wait would only demonstrate more slowly.
+    """
+
+    def _clock_that_advances_inside_the_lock(self, monkeypatch, before, after):
+        from django_ox import stored
+        from django_ox import worker as worker_module
+
+        moment = {"now": before}
+        monkeypatch.setattr(worker_module.timezone, "now", lambda: moment["now"])
+        lock_row = stored._lock_row
+
+        def lock_row_after_a_wait(pk, alias):
+            row = lock_row(pk, alias)
+            moment["now"] = after
+            return row
+
+        monkeypatch.setattr(stored, "_lock_row", lock_row_after_a_wait)
+
+    def test_a_tick_past_its_deadline_once_the_lock_is_granted_is_refused(
+        self, worker, monkeypatch
+    ):
+        a_minutely(starting_deadline_seconds=30)
+        tick = timezone.now().replace(second=0, microsecond=0)
+        self._clock_that_advances_inside_the_lock(
+            monkeypatch,
+            before=tick + timedelta(seconds=10),
+            after=tick + timedelta(seconds=45),
+        )
+        assert worker.dispatch_schedules() == 0
+        assert OxTask.objects.count() == 0
+        assert OxScheduleTick.objects.count() == 0, "a refused tick leaves no row"
+
+    def test_a_wait_that_stays_inside_the_deadline_still_fires(
+        self, worker, monkeypatch
+    ):
+        a_minutely(starting_deadline_seconds=30)
+        tick = timezone.now().replace(second=0, microsecond=0)
+        self._clock_that_advances_inside_the_lock(
+            monkeypatch,
+            before=tick + timedelta(seconds=10),
+            after=tick + timedelta(seconds=20),
+        )
+        assert worker.dispatch_schedules() == 1
+        assert OxTask.objects.count() == 1
+
+
 class TestTheWriteApiCannotLoseAnUpdate:
     def test_a_stale_instance_cannot_undo_a_resume(self):
         # Editor A holds a copy, editor B pauses and resumes, then A saves an

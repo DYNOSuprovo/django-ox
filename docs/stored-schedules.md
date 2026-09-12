@@ -199,6 +199,11 @@ create_schedule(
 The default is no deadline, which is what settings-declared schedules have always
 done: run however late.
 
+The deadline is judged when the tick is admitted, under the row's lock. A tick
+inside its deadline when the pass began and past it by the time the lock was
+granted, because another worker or an admin save held the row, is dropped rather
+than run late.
+
 A dropped tick logs `schedule_tick_dropped` with how late it was, so a drop is
 a signal rather than an absence. Each worker reports a given tick once, not once
 per dispatch pass.
