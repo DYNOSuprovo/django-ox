@@ -124,6 +124,18 @@ again. `sqlmigrate django_ox 0007` prints the statements for your engine.
   somewhere that changes without the worker knowing. `django_ox.E006` reports
   a source that cannot be built or has no `schedules()` method.
 
+### Fixed
+
+- A settings-declared schedule anchors once, however many workers first see it
+  and whatever tick each of them holds. Two workers whose first passes fell
+  either side of a minute boundary, or whose clocks differed by one, each
+  wrote an anchor: their rows had different tick times, so the unique
+  constraint serialised neither, and neither read saw the other's
+  uncommitted row. The later instant was then claimed with no task, and the
+  run it was for never happened. A pass that reads no history now takes a
+  per-schedule latch inside its transaction before it decides, so the second
+  worker waits, sees the anchor, and fires. Present in 1.1.0.
+
 ### Changed
 
 - The recurring-schedule documentation now says what the tick log actually

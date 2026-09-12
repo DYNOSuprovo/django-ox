@@ -13,7 +13,7 @@ from collections.abc import Callable, Coroutine
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from inspect import iscoroutinefunction
 from threading import Barrier, BrokenBarrierError, Condition, Event, Lock, Thread
 from traceback import format_exception
@@ -201,10 +201,23 @@ class _NotAdmitted(Exception):
     Raised inside the dispatch transaction to roll it back.
 
     Not an error anyone sees: it is how a schedule that changed between
-    being read and being acted on undoes an enqueue that has already been
-    issued. Django rolls an atomic block back on any exception, which is
-    the shortest way out of a write already made.
+    being read and being acted on, or a tick from before the schedule's
+    anchor, undoes a tick row that has already been written. Django rolls
+    an atomic block back on any exception, which is the shortest way out
+    of a write already made.
     """
+
+
+def _latch_instant() -> datetime:
+    """
+    The fixed instant a first-sighting latch row is written at.
+
+    The epoch: before any tick a schedule can be due at, so it never falls
+    inside the bounded tick read, and inside every supported database's
+    datetime range. Naive or aware to match USE_TZ, as every other tick is.
+    """
+    epoch = datetime(1970, 1, 1)
+    return epoch.replace(tzinfo=UTC) if settings.USE_TZ else epoch
 
 
 @dataclass(slots=True)
@@ -2077,6 +2090,74 @@ class Worker:
             .annotate(latest=Max("scheduled_for"))
         }
 
+    def _anchor_boundary(self, key: str, own_pk: int, now: datetime) -> datetime | None:
+        """
+        The earliest tick recorded for `key` other than this pass's own row,
+        or None when there is none, which makes this pass the first sighting.
+
+        Called inside the dispatch transaction, after this pass's tick row
+        is in. That row is excluded because it is visible in here, and
+        counting it would make every schedule look like it already had
+        history.
+
+        A plain read cannot answer "none". Two workers whose first passes
+        fall either side of a minute boundary, or whose clocks differ by
+        one, hold different candidate ticks: their INSERTs take different
+        keys, so the constraint serialises neither, and neither's read sees
+        the other's uncommitted row. Both anchor, and the later instant is
+        claimed with no task and never fires. The constraint does serialise
+        workers that write the same key, so a pass that reads no history
+        writes one: a latch row at a fixed instant per schedule, inserted
+        and deleted again inside this transaction. The second worker's
+        latch INSERT waits for the first's transaction to end, as a unique
+        index does with an uncommitted duplicate. Once that commits, its
+        latch is gone, this INSERT goes through, and the read repeated
+        after it finds the anchor. The repeat is a locking read where the
+        database has one, so it is a current read rather than this
+        transaction's snapshot, and it skips locked rows where it can: a
+        row another worker has inserted and not committed is locked by
+        that worker, who may be waiting on this latch, and a locking read
+        that waited on it would deadlock. Skipping it is right in any
+        case, since an uncommitted row is not history. Every committed
+        row is unlocked, because the only thing that locks tick rows is
+        this read, and the latch admits one of it at a time.
+
+        Deleted rather than released with a savepoint. What the other
+        worker waits on is the transaction that owns the tuple; rolling a
+        savepoint back ends that wait before the anchor is committed, and
+        a delete does not.
+
+        The latch never commits, so nothing ever reads it: not the bounded
+        tick read, not ox_prune, not the admin. SQLite has one writer, so
+        the tick INSERT already serialises first sightings there, and the
+        latch is two statements that change nothing.
+        """
+        others = (
+            OxScheduleTick.objects.using(self._db_alias)
+            .filter(schedule_name=key)
+            .exclude(pk=own_pk)
+            .order_by("scheduled_for")
+            .values_list("scheduled_for", flat=True)
+        )
+        earliest = others.first()
+        if earliest is not None:
+            return earliest
+        latch = OxScheduleTick.objects.using(self._db_alias).create(
+            schedule_name=key,
+            scheduled_for=_latch_instant(),
+            task_id=None,
+            created_at=now,
+        )
+        others = others.exclude(pk=latch.pk)
+        features = connections[self._db_alias].features
+        if features.has_select_for_update:
+            others = others.select_for_update(
+                skip_locked=features.has_select_for_update_skip_locked
+            )
+        earliest = others.first()
+        OxScheduleTick.objects.using(self._db_alias).filter(pk=latch.pk).delete()
+        return earliest
+
     def _log_tick_dropped(
         self, schedule: Schedule, scheduled_for: datetime, now: datetime
     ) -> None:
@@ -2281,33 +2362,37 @@ class Worker:
                     # a second no-task row, this time over a tick that had a
                     # boundary and should have fired. The constraint then
                     # holds that instant for good, and the run it was for
-                    # never happens.
+                    # never happens. _anchor_boundary says how two workers
+                    # holding different ticks are kept from both anchoring.
                     #
-                    # The row inserted above is excluded: it is this pass's
-                    # own tick, visible inside this transaction, and counting
-                    # it would make every schedule look like it already had
-                    # history.
-                    #
-                    # One extra query, and only while a schedule has no
-                    # ticks at all. Once it has one, `last` is set and this
-                    # never runs again.
-                    first_sighting = (
-                        last is None
-                        and current.anchors
-                        and not OxScheduleTick.objects.using(self._db_alias)
-                        .filter(schedule_name=current.key)
-                        .exclude(pk=tick_row.pk)
-                        .exists()
-                    )
+                    # Asked only while the bounded read found nothing for
+                    # this schedule. One whose newest tick is at or after
+                    # the bound has `last` set and skips it; one whose
+                    # newest tick predates the bound pays the one indexed
+                    # read on every dispatch, and a schedule alone in its
+                    # pass, whose bound is its own due tick, is always in
+                    # that position. It is not "only until it has a tick".
+                    first_sighting = False
+                    if last is None and current.anchors:
+                        anchor = self._anchor_boundary(current.key, tick_row.pk, now)
+                        if anchor is None:
+                            first_sighting = True
+                        elif scheduled_for < anchor:
+                            # A tick from before the schedule's anchor: this
+                            # worker's clock, or its pass, is behind the one
+                            # that saw the schedule first. The anchor is the
+                            # boundary, and nothing before it fires.
+                            raise _NotAdmitted
                     if not first_sighting:
                         result = current.task.enqueue(*current.args, **current.kwargs)
                         tick_row.task_id = result.id
                         tick_row.save(using=self._db_alias, update_fields=["task"])
             except _NotAdmitted:
-                # The schedule changed between the read and now: disabled,
-                # retimed, or gone. The rollback took the tick row with it,
-                # and the tick stays unclaimed so a worker with a current
-                # view can still act on it.
+                # The schedule changed between the read and now (disabled,
+                # retimed, or gone), or the tick predates its anchor. The
+                # rollback took the tick row with it, and the tick stays
+                # unclaimed so a worker with a current view can still act
+                # on it.
                 continue
             except IntegrityError:
                 # Almost always another worker claiming this tick first: its

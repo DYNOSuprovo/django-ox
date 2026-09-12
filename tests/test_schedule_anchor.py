@@ -12,9 +12,12 @@ whose boundary already existed and which should have fired, and the unique
 constraint then suppresses that instant for good.
 """
 
+import threading
+import time
 from datetime import timedelta
 
 import pytest
+from django.db import connection
 from django.utils import timezone
 
 from django_ox.models import OxScheduleTick, OxTask
@@ -122,3 +125,181 @@ class TestASecondAnchorDoesNotSwallowATick:
             f"the first-sighting check ran for a schedule with history: "
             f"{existence_checks}"
         )
+
+
+class _ThreadClock:
+    """timezone.now() answered per thread, so two workers run at once at
+    different instants without a global patch that each would overwrite."""
+
+    def __init__(self, real):
+        self._local = threading.local()
+        self._real = real
+
+    def set(self, moment):
+        self._local.now = moment
+
+    def __call__(self):
+        return getattr(self._local, "now", None) or self._real()
+
+
+def _is_first_sighting_read(sql):
+    # The read that decides first sighting: this schedule's log, this pass's
+    # own row excluded. The only SELECT on the tick table with a NOT.
+    return sql.lstrip().upper().startswith("SELECT") and (
+        "oxscheduletick" in sql and "NOT (" in sql
+    )
+
+
+def _is_latch_insert(sql, params):
+    # The latch row is the only tick ever written at the epoch.
+    return (
+        sql.lstrip().upper().startswith("INSERT")
+        and "oxscheduletick" in sql
+        and any("1970-01-01" in str(param) for param in params or ())
+    )
+
+
+def _worker_thread(clock, moment, matches, before, after, out, key):
+    def hook(execute, sql, params, many, context):
+        hit = matches(sql, params)
+        if hit:
+            before()
+        result = execute(sql, params, many, context)
+        if hit:
+            after()
+        return result
+
+    def body():
+        clock.set(moment)
+        try:
+            with connection.execute_wrapper(hook):
+                out[key] = Worker(backoff_initial=0).dispatch_schedules()
+        except BaseException as exc:
+            out[key] = exc
+        finally:
+            connection.close()
+
+    return threading.Thread(target=body, name=f"anchor-{key}")
+
+
+def _rows():
+    return list(
+        OxScheduleTick.objects.order_by("scheduled_for").values_list(
+            "scheduled_for", "task_id"
+        )
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+class TestFirstSightingsOnDifferentTicks:
+    """
+    Two workers first see a settings schedule either side of a minute
+    boundary: A holds T0 as its tick, B holds T1.
+
+    Their tick rows take different keys, so the unique constraint serialises
+    neither, and neither's read sees the other's uncommitted row. Left to
+    plain reads both anchor, and T1 is claimed with no task: a tick that had
+    a boundary and never runs. The invariant is one anchor per schedule, and
+    it is the earliest row; every row after it carries a task.
+
+    Threads with their own connections, paused from inside their own
+    statements, which is the interleaving two processes produce. On SQLite
+    the single writer serialises the two, so the pause holds B at its
+    INSERT and the scenario degrades to a sequence; the tests still hold
+    there, and PostgreSQL and MySQL are where they can fail.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _schedule(self, settings, monkeypatch):
+        settings.TASKS = tasks_setting(MINUTELY)
+        from django_ox import worker as worker_module
+
+        # worker_module.timezone is django.utils.timezone itself, so this
+        # patches every caller; the clock answers the real time on a thread
+        # that has not set one.
+        self.clock = _ThreadClock(timezone.now)
+        monkeypatch.setattr(worker_module.timezone, "now", self.clock)
+        self.t0 = timezone.now().replace(second=0, microsecond=0)
+        self.t1 = self.t0 + timedelta(minutes=1)
+
+    def _overlap(self, a_matches, b_matches, b_signals_before):
+        """Run A until its matched statement, then B alongside it."""
+        a_paused, release_a, b_reached = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+        out = {}
+        a = _worker_thread(
+            self.clock,
+            self.t0 + timedelta(seconds=30),
+            a_matches,
+            before=lambda: None,
+            after=lambda: (a_paused.set(), release_a.wait(timeout=30)),
+            out=out,
+            key="A",
+        )
+        b = _worker_thread(
+            self.clock,
+            self.t1 + timedelta(seconds=30),
+            b_matches,
+            before=b_reached.set if b_signals_before else (lambda: None),
+            after=(lambda: None) if b_signals_before else b_reached.set,
+            out=out,
+            key="B",
+        )
+        a.start()
+        assert a_paused.wait(timeout=10), "A never reached the statement"
+        b.start()
+        # B either reaches its statement or, on SQLite, blocks on the file
+        # lock A holds; both are the concurrent state the tests are about.
+        b_reached.wait(timeout=2)
+        time.sleep(0.3)
+        release_a.set()
+        a.join(timeout=30)
+        b.join(timeout=30)
+        assert not a.is_alive() and not b.is_alive()
+        raised = [v for v in out.values() if isinstance(v, BaseException)]
+        assert not raised, raised
+        return out
+
+    def _assert_one_anchor_and_it_is_the_earliest(self):
+        rows = _rows()
+        anchors = [at for at, task_id in rows if task_id is None]
+        assert len(anchors) == 1, f"the schedule anchored more than once: {rows}"
+        assert anchors[0] == rows[0][0], f"the anchor is not the earliest: {rows}"
+        assert OxTask.objects.count() == len(rows) - 1
+
+    def test_a_first_sighting_on_the_next_tick_does_not_anchor_a_second_time(
+        self,
+    ):
+        # A pauses after the read that told it there is no history, before it
+        # has written anything else, while B runs its whole pass. Without a
+        # latch B's read finds nothing either, and both commit anchors.
+        self._overlap(
+            a_matches=lambda sql, params: _is_first_sighting_read(sql),
+            b_matches=lambda sql, params: _is_first_sighting_read(sql),
+            b_signals_before=False,
+        )
+        self._assert_one_anchor_and_it_is_the_earliest()
+        # The schedule keeps running: the tick after the anchor fires.
+        self.clock.set(self.t1 + timedelta(minutes=1, seconds=30))
+        assert Worker(backoff_initial=0).dispatch_schedules() == 1
+        self._assert_one_anchor_and_it_is_the_earliest()
+
+    def test_the_later_first_sighting_waits_on_the_latch_and_then_fires(self):
+        # A pauses with its latch row written and uncommitted. B's own latch
+        # INSERT has to wait for A's transaction to end, and the read B
+        # repeats after it finds A's anchor, so B fires T1 rather than
+        # anchoring it.
+        out = self._overlap(
+            a_matches=_is_latch_insert,
+            b_matches=_is_latch_insert,
+            b_signals_before=True,
+        )
+        assert out["A"] == 0, "the first sighting must not fire"
+        assert out["B"] == 1, "the tick after the anchor must fire"
+        rows = _rows()
+        assert [at for at, _ in rows] == [self.t0, self.t1]
+        assert rows[0][1] is None and rows[1][1] is not None, rows
+        assert OxTask.objects.count() == 1
