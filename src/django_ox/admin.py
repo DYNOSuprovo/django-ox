@@ -22,6 +22,7 @@ from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.utils import timezone
 from django.utils.html import format_html, format_html_join
+from django.utils.module_loading import import_string
 
 from . import actions, registry, stored
 from .compat import DEFAULT_TASK_BACKEND_ALIAS
@@ -488,8 +489,8 @@ class OxScheduleAdmin(_ScheduleAdmin):
         has no confirmation step, and a success count alone leaves an
         operator who mis-selected a paused schedule with nothing to read.
         """
-        alias, options = self._stored_backend()
-        source = stored.DatabaseScheduleSource(options, alias)
+        alias, options, source_class = self._stored_backend()
+        source = source_class(options, alias)
         now = timezone.now()
         run, skipped, overridden, refused = 0, 0, 0, 0
         for schedule in queryset:
@@ -535,18 +536,43 @@ class OxScheduleAdmin(_ScheduleAdmin):
             )
 
     @staticmethod
-    def _stored_backend() -> tuple[str, dict[str, Any]]:
+    def _stored_backend() -> tuple[str, dict[str, Any], type[Any]]:
         """
-        The backend whose workers dispatch the stored schedules.
+        The backend whose workers dispatch the stored schedules, its
+        options, and the class it reads them with.
 
         Read from settings rather than from the instantiated backends, the
         same way the system checks read it: a check must not construct
         every backend in a project to answer a question about a dictionary.
+
+        The path is imported and the class tested, rather than matched by
+        name. A project may point SCHEDULE_SOURCE at its own subclass, and
+        the worker's loader takes any class with a `schedules()` method, so
+        a source called anything at all is a supported configuration. A
+        name test missed every one of them and fell back to the default
+        alias, which either enqueues a manual run to a backend nobody
+        dispatches these schedules from, or reports a healthy schedule as
+        one that cannot run. The class is returned with the options because
+        a subclass that changes how a row becomes a schedule has to be the
+        one the manual run builds with, or the admin runs something the
+        project did not define.
         """
         for alias, config in settings.TASKS.items():
             options = config.get("OPTIONS") if isinstance(config, dict) else None
             if not isinstance(options, dict):
                 continue
-            if "DatabaseScheduleSource" in str(options.get("SCHEDULE_SOURCE", "")):
-                return str(alias), options
-        return DEFAULT_TASK_BACKEND_ALIAS, {}
+            path = options.get("SCHEDULE_SOURCE")
+            if not isinstance(path, str):
+                continue
+            try:
+                source_class = import_string(path)
+            except ImportError:
+                # The worker refuses this configuration outright. Here it
+                # is one backend of several and the page still has to load,
+                # so it is simply not the one.
+                continue
+            if isinstance(source_class, type) and issubclass(
+                source_class, stored.DatabaseScheduleSource
+            ):
+                return str(alias), options, source_class
+        return DEFAULT_TASK_BACKEND_ALIAS, {}, stored.DatabaseScheduleSource

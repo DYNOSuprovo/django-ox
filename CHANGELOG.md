@@ -148,7 +148,10 @@ for your engine.
   and says how many of the schedules it ran were disabled or already ended, and
   how many it was refused by a registry entry's own permission.
   The changelist carries `end_time`, so a row that has ended is visible where
-  the selection is made.
+  the selection is made. The backend a manual run enqueues through is found by
+  importing `OPTIONS["SCHEDULE_SOURCE"]` and testing the class, so a project's
+  own subclass of `DatabaseScheduleSource` is found whatever it is called, and
+  is the class the run builds its schedule with.
 - `manage.py ox_import_beat_schedules`, which reads a `django-celery-beat`
   schedule table and prints the django-ox equivalents. It writes nothing, names
   what it could not translate and why, and says which timing will differ.

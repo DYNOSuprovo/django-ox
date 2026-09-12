@@ -485,6 +485,98 @@ class TestRunOnceNowReportsAPermissionRefusal:
         assert not any("permission" in m for m in messages)
 
 
+class TestTheDispatchingBackendIsFoundByClassNotByName:
+    """
+    A project may point SCHEDULE_SOURCE at its own subclass of
+    DatabaseScheduleSource -- to override how a row becomes a schedule,
+    say. The loader the worker uses accepts any class with a schedules()
+    method, so a subclass under any name is a supported configuration.
+
+    The admin has to find the same backend the worker dispatches from,
+    because "Run selected schedules once now" enqueues through it. Matched
+    by name, a subclass called anything else was missed: the action fell
+    back to the default alias, and depending on the project either
+    enqueued to the wrong backend while reporting success, or reported a
+    healthy schedule as one that cannot run.
+    """
+
+    def _run(self, client, pk):
+        return client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {"action": "run_once_now", "_selected_action": [str(pk)]},
+            follow=True,
+        )
+
+    def _two_backends(self, settings, source_path):
+        # Both serve the same queue, so the enqueue succeeds either way and
+        # the row's backend_name is what says which one the action chose.
+        settings.TASKS = {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {},
+            },
+            "sched": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {"SCHEDULE_SOURCE": source_path},
+            },
+        }
+
+    def test_a_subclass_under_another_name_is_the_dispatching_backend(
+        self, client, admin_user, settings
+    ):
+        self._two_backends(settings, "tests.sources.RowSource")
+        row = a_schedule()
+        client.force_login(admin_user)
+        self._run(client, row.pk)
+        assert OxTask.objects.get().backend_name == "sched", (
+            "the manual run went to a backend no worker dispatches from"
+        )
+
+    def test_the_configured_class_is_the_one_that_builds_the_schedule(
+        self, client, admin_user, settings
+    ):
+        # The subclass decides what a row becomes. Building with the base
+        # class would quietly run something the project did not define.
+        self._two_backends(settings, "tests.sources.CountingSource")
+        from tests import sources
+
+        sources.CountingSource.built = 0
+        row = a_schedule()
+        client.force_login(admin_user)
+        self._run(client, row.pk)
+        assert sources.CountingSource.built == 1, (
+            "the action built the schedule with the base class"
+        )
+
+    def test_the_shipped_path_still_resolves(self, client, admin_user, settings):
+        self._two_backends(settings, "django_ox.stored.DatabaseScheduleSource")
+        row = a_schedule()
+        client.force_login(admin_user)
+        self._run(client, row.pk)
+        assert OxTask.objects.get().backend_name == "sched"
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests.sources.NotASource",
+            "tests.sources.NoSuchNameAtAll",
+            "django_ox.stored.DatabaseScheduleSource.nope",
+        ],
+    )
+    def test_something_that_is_not_one_is_not_taken_for_one(
+        self, client, admin_user, settings, path
+    ):
+        # A name that does not import, or imports to something that is not
+        # a schedule source, must not be read as the dispatching backend.
+        self._two_backends(settings, path)
+        row = a_schedule()
+        client.force_login(admin_user)
+        self._run(client, row.pk)
+        assert OxTask.objects.get().backend_name == "default"
+
+
 class TestReEnableThroughTheChangeForm:
     def test_the_boundary_moves(self, client, admin_user):
         # Through the form, not the action. save_model hands update_schedule
