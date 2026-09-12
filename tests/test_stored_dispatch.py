@@ -728,6 +728,109 @@ class TestTheBoundaryMustMatchTheTiming:
         assert worker.dispatch_schedules() == 0
 
 
+class TestTheBoundaryIsTimedUnderTheLock:
+    """
+    Two writes of the boundary took their clock before the row lock:
+    update_schedule at its start, and the heal once for every row it had
+    queued. Waiting for the lock is time the schedule runs in, and a
+    boundary from before the wait sits behind a tick that came due during
+    it. Both now read the clock once the lock is held. As with the
+    deadline, the wait is stood in for by a lock that moves the clock.
+    """
+
+    def _clock(self, monkeypatch):
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        return base, at
+
+    def _lock_that_waits(self, monkeypatch, during_the_wait):
+        """The first lock taken runs `during_the_wait` before it is granted."""
+        from django_ox import stored
+
+        lock_row = stored._lock_row
+        waited = {"done": False}
+
+        def lock_row_after_a_wait(pk, alias):
+            if not waited["done"]:
+                waited["done"] = True
+                during_the_wait(pk)
+            return lock_row(pk, alias)
+
+        monkeypatch.setattr(stored, "_lock_row", lock_row_after_a_wait)
+
+    def test_a_retime_is_timed_from_the_lock_not_from_before_the_wait(
+        self, worker, monkeypatch
+    ):
+        """
+        The row is hourly. update_schedule reads the clock at H-1s and waits
+        for the lock until H+1s. A dispatcher holding the old definition
+        derives the H tick, which the new definition also contains, and
+        admits it under the lock against the boundary the retime wrote. A
+        boundary of H-1s lets it through; the retime committed after H.
+        """
+        base, at = self._clock(monkeypatch)
+        row = a_minutely(cron="0 * * * *", start_time=base - timedelta(hours=2))
+        at(-1800)
+        worker._schedule_source.schedules()  # the old definition, cached
+        self._lock_that_waits(monkeypatch, lambda pk: at(1))
+        at(-1)
+        update_schedule(row, cron="0,30 * * * *")
+        row.refresh_from_db()
+        assert row.start_time == base + timedelta(seconds=1), (
+            "the boundary was timed from before the lock wait"
+        )
+        at(5)
+        assert worker.dispatch_schedules() == 0, "H is before the retime"
+        assert OxScheduleTick.objects.exclude(task_id=None).count() == 0
+
+    def test_a_heal_is_timed_from_its_own_lock(self, worker, monkeypatch):
+        """
+        A raw pause met at dispatch is healed on the next pass. That heal's
+        lock waits from T+75 to T+125, and the row is re-enabled the same
+        raw way at T+122, during the wait. The T+120 tick is inside the
+        pause. A boundary of T+75 fires it; one of T+125 does not.
+        """
+        base, at = self._clock(monkeypatch)
+        row = a_minutely(start_time=base - timedelta(minutes=5))
+        source = worker._schedule_source
+        at(10)
+        assert worker.dispatch_schedules() == 1, "T fires"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0, "refused under the lock"
+        assert row.pk in source._needs_heal
+
+        def resumed_during_the_wait(pk):
+            at(122)
+            OxSchedule.objects.filter(pk=pk).update(enabled=True)
+            at(125)
+
+        self._lock_that_waits(monkeypatch, resumed_during_the_wait)
+        at(75)
+        worker.dispatch_schedules()
+        row.refresh_from_db()
+        assert row.start_time == base + timedelta(seconds=125), (
+            "the heal was timed from before its lock wait"
+        )
+        fired = sorted(
+            (t - base).total_seconds()
+            for t in OxScheduleTick.objects.exclude(task_id=None).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+        assert fired == [0], f"replayed a tick from inside the pause: {fired}"
+        at(190)
+        assert worker.dispatch_schedules() == 1, "the schedule has resumed"
+
+
 class TestTheDeadlineIsJudgedUnderTheLock:
     """
     The starting deadline is a promise about how late a run may begin.

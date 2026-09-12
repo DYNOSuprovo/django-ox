@@ -269,7 +269,6 @@ def update_schedule(
     # form.instance, which ModelForm._post_clean has already updated, so the
     # in-memory value is the new one and a re-enable through the change form
     # would never look like a transition.
-    now = timezone.now()
     alias = schedule_db_alias()
     with transaction.atomic(using=alias):
         # The row under its own lock, and the values read from it. Reading
@@ -280,6 +279,13 @@ def update_schedule(
         current = _lock_row(schedule.pk, alias)
         if current is None:
             raise OxSchedule.DoesNotExist(f"Schedule {schedule.pk} no longer exists.")
+        # The clock once the lock is held, not before the wait for it. The
+        # boundary this call may write is the moment of the change, and the
+        # change is not made until the row is locked: a dispatcher that
+        # derived a tick under the old definition during the wait, an
+        # instant the new definition also contains, admits it against the
+        # boundary, and a boundary from before the wait lets it through.
+        now = timezone.now()
         # The values as the database holds them, before this call's changes.
         # Taken from the locked row rather than from the caller's instance,
         # which may be minutes old.
@@ -498,13 +504,19 @@ class DatabaseScheduleSource:
         re-read, and would go on proposing ticks the row no longer wants.
         """
         pending, self._needs_heal = self._needs_heal, {}
-        now = timezone.now()
         for pk, observed in pending.items():
             try:
                 with transaction.atomic(using=self._db_alias):
                     row = _lock_row(pk, self._db_alias)
                     if row is None:
                         continue
+                    # After the lock, per row. The boundary is the moment
+                    # the change was found, and a wait for the lock is
+                    # time the row can change again in: resumed while the
+                    # heal waited, a tick due in that wait is inside the
+                    # pause, and a boundary from before the wait is in
+                    # front of it.
+                    now = timezone.now()
                     if (row.boundary_for, row.start_time) != observed:
                         # Someone wrote the boundary since this worker saw
                         # it stale: another worker's heal, or the write
