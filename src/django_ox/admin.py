@@ -346,6 +346,41 @@ class OxScheduleAdmin(_ScheduleAdmin):
     actions = ("enable_selected", "disable_selected", "run_once_now")
     readonly_fields = ("start_time", "created_at", "updated_at")
 
+    #: Said on the pages where a person is about to write a row that
+    #: nothing would dispatch. The condition cannot be a system check: a
+    #: check runs without importing application code, so it can see
+    #: SCHEDULABLE_TASKS in settings but never an @schedulable decorator,
+    #: and it would need a database read to know whether any row exists.
+    #: Here the registry is populated and the person is standing in front
+    #: of the mistake.
+    NO_SOURCE_WARNING = (
+        "No backend sets OPTIONS['SCHEDULE_SOURCE'] to "
+        "django_ox.stored.DatabaseScheduleSource, so schedules saved here "
+        "are stored and never dispatched."
+    )
+
+    def _warn_if_nothing_dispatches(self, request: HttpRequest) -> None:
+        # On the rendered page only. An action POST is handled by
+        # changelist_view and then redirects to it, so warning on both
+        # would say the same thing twice on the page that follows.
+        if request.method == "GET" and self._stored_backend() is None:
+            self.message_user(request, self.NO_SOURCE_WARNING, messages.WARNING)
+
+    def changelist_view(
+        self, request: HttpRequest, extra_context: dict[str, Any] | None = None
+    ) -> Any:
+        self._warn_if_nothing_dispatches(request)
+        return super().changelist_view(request, extra_context)
+
+    def add_view(
+        self,
+        request: HttpRequest,
+        form_url: str = "",
+        extra_context: dict[str, Any] | None = None,
+    ) -> Any:
+        self._warn_if_nothing_dispatches(request)
+        return super().add_view(request, form_url, extra_context)
+
     def get_form(
         self,
         request: HttpRequest,
@@ -547,7 +582,11 @@ class OxScheduleAdmin(_ScheduleAdmin):
         has no confirmation step, and a success count alone leaves an
         operator who mis-selected a paused schedule with nothing to read.
         """
-        alias, options, source_class = self._stored_backend()
+        alias, options, source_class = self._stored_backend() or (
+            DEFAULT_TASK_BACKEND_ALIAS,
+            {},
+            stored.DatabaseScheduleSource,
+        )
         source = source_class(options, alias)
         now = timezone.now()
         run, skipped, overridden, refused = 0, 0, 0, 0
@@ -594,10 +633,11 @@ class OxScheduleAdmin(_ScheduleAdmin):
             )
 
     @staticmethod
-    def _stored_backend() -> tuple[str, dict[str, Any], type[Any]]:
+    def _stored_backend() -> tuple[str, dict[str, Any], type[Any]] | None:
         """
         The backend whose workers dispatch the stored schedules, its
-        options, and the class it reads them with.
+        options, and the class it reads them with, or None when no backend
+        names one.
 
         Read from settings rather than from the instantiated backends, the
         same way the system checks read it: a check must not construct
@@ -633,4 +673,4 @@ class OxScheduleAdmin(_ScheduleAdmin):
                 source_class, stored.DatabaseScheduleSource
             ):
                 return str(alias), options, source_class
-        return DEFAULT_TASK_BACKEND_ALIAS, {}, stored.DatabaseScheduleSource
+        return None

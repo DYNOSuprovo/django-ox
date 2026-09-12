@@ -156,7 +156,11 @@ for your engine.
   the selection is made. The backend a manual run enqueues through is found by
   importing `OPTIONS["SCHEDULE_SOURCE"]` and testing the class, so a project's
   own subclass of `DatabaseScheduleSource` is found whatever it is called, and
-  is the class the run builds its schedule with.
+  is the class the run builds its schedule with. The changelist and the add
+  page say so when no backend names a source at all, because until one does,
+  a schedule saved there is stored and never dispatched, with nothing else
+  to say so: no error, no log, no system check, and a manual run that
+  enqueues anyway.
 - `manage.py ox_import_beat_schedules`, which reads a `django-celery-beat`
   schedule table and prints the django-ox equivalents. It writes nothing, names
   what it could not translate and why, and says which timing will differ.

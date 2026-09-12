@@ -682,6 +682,116 @@ class TestARefusedTaskKeyIsAFieldErrorAndNotA403:
             )
 
 
+class TestTheAdminSaysWhenNothingWillDispatchWhatItWrites:
+    """
+    The admin registers whenever django.contrib.admin is installed, and
+    the rows it writes are dispatched only by a worker whose backend names
+    a DatabaseScheduleSource in OPTIONS["SCHEDULE_SOURCE"]. A project that
+    exposes tasks with @schedulable and never sets that option gets a
+    working-looking admin whose schedules do nothing: no error, no log, no
+    system check, "never" in the Last tick column, and a manual run that
+    genuinely enqueues, which is positive evidence for a belief that is
+    false.
+
+    A system check cannot cover it -- a check runs without importing
+    application code, so it can see SCHEDULABLE_TASKS in settings but
+    never an @schedulable decorator -- and it needs a database read to
+    know whether any row exists. The admin is where the registry is
+    populated and where the person is standing when they make the
+    mistake.
+    """
+
+    UNSET = {
+        "default": {
+            "BACKEND": "django_ox.backend.OxBackend",
+            "QUEUES": ["default"],
+            "OPTIONS": {},
+        }
+    }
+    SET = {
+        "default": {
+            "BACKEND": "django_ox.backend.OxBackend",
+            "QUEUES": ["default"],
+            "OPTIONS": {"SCHEDULE_SOURCE": "django_ox.stored.DatabaseScheduleSource"},
+        }
+    }
+
+    def _messages(self, response):
+        return [str(m) for m in response.context["messages"]]
+
+    def _warned(self, response):
+        return any("never dispatched" in m for m in self._messages(response))
+
+    def test_the_changelist_says_so(self, client, admin_user, settings):
+        settings.TASKS = self.UNSET
+        client.force_login(admin_user)
+        response = client.get(reverse("admin:django_ox_oxschedule_changelist"))
+        assert self._warned(response), (
+            "a schedule saved here would never run and the page said nothing"
+        )
+
+    def test_the_add_page_says_so_before_the_row_is_written(
+        self, client, admin_user, settings
+    ):
+        settings.TASKS = self.UNSET
+        client.force_login(admin_user)
+        assert self._warned(client.get(reverse(ADD_URL)))
+
+    def test_a_manual_run_no_longer_teaches_the_wrong_lesson(
+        self, client, admin_user, settings
+    ):
+        # The one action that works without a source. Its success message
+        # is the strongest evidence the user has that the wiring is right.
+        settings.TASKS = self.UNSET
+        row = a_schedule()
+        client.force_login(admin_user)
+        response = client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {"action": "run_once_now", "_selected_action": [str(row.pk)]},
+            follow=True,
+        )
+        messages = self._messages(response)
+        assert "Enqueued 1 task(s)." in messages
+        assert self._warned(response), "the run reported success and nothing else"
+
+    def test_a_configured_project_is_not_warned(self, client, admin_user, settings):
+        settings.TASKS = self.SET
+        client.force_login(admin_user)
+        assert not self._warned(client.get(reverse(ADD_URL)))
+        assert not self._warned(
+            client.get(reverse("admin:django_ox_oxschedule_changelist"))
+        )
+
+    def test_a_projects_own_source_is_not_warned_about(
+        self, client, admin_user, settings
+    ):
+        settings.TASKS = {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {"SCHEDULE_SOURCE": "tests.sources.RowSource"},
+            }
+        }
+        client.force_login(admin_user)
+        assert not self._warned(
+            client.get(reverse("admin:django_ox_oxschedule_changelist"))
+        )
+
+    def test_the_warning_is_not_repeated_by_the_action_post(
+        self, client, admin_user, settings
+    ):
+        settings.TASKS = self.UNSET
+        row = a_schedule()
+        client.force_login(admin_user)
+        response = client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {"action": "run_once_now", "_selected_action": [str(row.pk)]},
+            follow=True,
+        )
+        said = [m for m in self._messages(response) if "never dispatched" in m]
+        assert len(said) == 1, f"the same warning was shown twice: {said}"
+
+
 class TestReEnableThroughTheChangeForm:
     def test_the_boundary_moves(self, client, admin_user):
         # Through the form, not the action. save_model hands update_schedule

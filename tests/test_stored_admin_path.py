@@ -294,8 +294,11 @@ class TestTheAdminWithoutADatabaseSource:
     """
     The admin is registered whenever django.contrib.admin is installed. With
     SCHEDULE_SOURCE unset the rows it writes are never dispatched, while
-    the run-now action still works. Recorded as it stands; whether to hide
-    the section, warn on it or document it is an open decision.
+    the run-now action still works -- which is the trap: the one thing that
+    does work is positive evidence for a belief that is false. The section
+    stays where it is and the pages say so, because hiding it would leave a
+    project that has done step 1 and step 3 with nowhere to find out why
+    step 2 matters.
     """
 
     def test_rows_exist_run_now_works_and_nothing_dispatches(
@@ -303,6 +306,10 @@ class TestTheAdminWithoutADatabaseSource:
     ):
         settings.TASKS = tasks_setting(database_source=False)
         assert "Ox schedules" in client.get(reverse("admin:index")).content.decode()
+        changelist = client.get(reverse(CHANGELIST))
+        assert any(
+            "never dispatched" in str(m) for m in changelist.context["messages"]
+        ), "nothing told the user their schedules would not run"
         row = create_through_the_admin(client, cron="* * * * *")
         OxSchedule.objects.filter(pk=row.pk).update(
             start_time=timezone.now() - timezone.timedelta(minutes=5)
