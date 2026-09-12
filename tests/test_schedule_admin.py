@@ -1,4 +1,4 @@
-"""The schedule admin, which is this package's first write surface."""
+"""The schedule admin: the first place a person authors a schedule row."""
 
 from datetime import timedelta
 

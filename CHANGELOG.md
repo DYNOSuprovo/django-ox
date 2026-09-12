@@ -136,8 +136,9 @@ for your engine.
   submits and nothing that `objects.create()` writes. A valid row written
   that way still runs, with its boundary moved to the read that found it and
   logged as `schedule_boundary_healed`.
-- A Django admin for stored schedules, the first write surface this package
-  offers. The task field is a choice drawn from the registry, so it cannot
+- A Django admin for stored schedules, the first place the package lets a
+  person author a row rather than act on one a worker wrote. The task field
+  is a choice drawn from the registry, so it cannot
   express a task the code has not exposed, and the same membership check runs
   again on the model for the write paths that build no form. A registry
   entry's own `permission` comes back as an error on that field, with the
