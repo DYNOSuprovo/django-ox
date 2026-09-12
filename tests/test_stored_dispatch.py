@@ -1517,6 +1517,76 @@ class TestARowChangedOutsideTheWriteApiIsFound:
         )
 
 
+class TestAnOrdinaryEditCannotLaunderAStaleBoundary:
+    """
+    update_schedule rewrites the boundary digest on every call, whatever
+    the call changed. That is what keeps the digest honest about the row
+    it is stored on -- but on a row whose boundary was already stale, a
+    rewrite alone would make a boundary set for an old definition look
+    current, and the schedule would then fire an instant that passed
+    while its new timing was in the future.
+
+    So a call made on an already-stale row moves the boundary too, even
+    when it changes nothing the boundary is for. A rename is the smallest
+    such call, and the routes that leave a boundary stale -- a bulk
+    update, a fixture, a data migration, objects.create() -- are all ones
+    the schedules page tolerates.
+    """
+
+    @pytest.mark.usefixtures("frozen_now")
+    def test_a_rename_after_a_raw_retime_moves_the_boundary(self, worker):
+        was = timezone.now() - timedelta(days=2)
+        row = create_schedule(
+            name="nightly",
+            task_key="report",
+            trigger="cron",
+            cron="0 2 * * *",
+            start_time=was,
+        )
+        OxSchedule.objects.filter(pk=row.pk).update(cron="0 3 * * *")
+        row.refresh_from_db()
+        update_schedule(row, name="nightly-renamed")
+        # The enqueue first: what this costs is a real run of the task at an
+        # instant nothing scheduled while the new timing was in the future,
+        # not a column reading.
+        assert worker.dispatch_schedules() == 0, (
+            "a tick from before the retime fired after an unrelated edit"
+        )
+        assert OxTask.objects.count() == 0
+        row.refresh_from_db()
+        assert row.start_time > was, (
+            "the stale boundary was rewritten clean rather than moved"
+        )
+        assert row.boundary_generation == 1, "the boundary write was not counted"
+        assert row.boundary_for == boundary_digest(row)
+
+    @pytest.mark.usefixtures("frozen_now")
+    def test_the_same_holds_for_a_row_written_with_objects_create(self, worker):
+        # No raw retime at all: a row written around the write API carries
+        # no digest, so its boundary is stale from the moment it exists.
+        was = timezone.now() - timedelta(days=2)
+        row = OxSchedule.objects.create(
+            name="nightly",
+            task_key="report",
+            trigger="cron",
+            cron="0 3 * * *",
+            start_time=was,
+            created_at=was,
+            updated_at=was,
+        )
+        update_schedule(row, name="nightly-renamed")
+        assert worker.dispatch_schedules() == 0, (
+            "a tick from before the row existed to a worker fired"
+        )
+        assert OxTask.objects.count() == 0
+        row.refresh_from_db()
+        assert row.start_time == timezone.now(), (
+            "the boundary the writer chose was kept rather than moved"
+        )
+        assert row.boundary_generation == 1
+        assert row.boundary_for == boundary_digest(row)
+
+
 class TestADroppedTickIsReportedOnce:
     def test_a_tick_already_recorded_is_not_reported_as_dropped(
         self, worker, caplog, monkeypatch
