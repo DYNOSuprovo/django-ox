@@ -213,11 +213,12 @@ class OxSchedule(models.Model):
     arguments = models.JSONField(default=dict, blank=True)
     enabled = models.BooleanField(default=True)
     start_time = models.DateTimeField()
-    #: A digest of the timing columns as they were when start_time was
-    #: last written. Dispatch recomputes it from the row and compares, so a
-    #: retime made by a route that runs no model code, a bulk update or a
-    #: fixture, is still noticed. `enabled` is deliberately not part of it;
-    #: django_ox.stored says why. Written there, never by hand.
+    #: A digest of the timing columns and `enabled` as they were when
+    #: start_time was last written. Dispatch and the periodic read recompute
+    #: it from the row and compare, so a retime or a pause made by a route
+    #: that runs no model code, a bulk update or a fixture, is still noticed
+    #: at the next read. django_ox.stored says what that can and cannot see.
+    #: Written there, never by hand.
     boundary_for = models.CharField(max_length=64, blank=True, default="")
     end_time = models.DateTimeField(null=True, blank=True)
     starting_deadline_seconds = models.PositiveIntegerField(null=True, blank=True)

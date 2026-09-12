@@ -71,9 +71,11 @@ again. `sqlmigrate django_ox 0007` prints the statements for your engine.
   when a worker first notices it, and records the timing that boundary was set
   for, so retiming a schedule reschedules it from the moment of the change
   instead of firing a tick that already passed. Because that record is derived
-  from the row rather than incremented by a write path, a retime made with a
-  bulk `update()` is noticed too; a pause and resume made the same way is not,
-  and the schedules page says so.
+  from the row rather than incremented by a write path, a retime or a pause
+  made with a bulk `update()` is noticed too, at the next read, and the
+  boundary moves to that read. A change made and reverted between two reads
+  is not, and the schedules page says what that means for a bulk pause and
+  resume.
 - `django_ox.stored.create_schedule` and `update_schedule`, the supported
   programmatic write path. They validate, maintain the boundary and bump the
   change row. `save()` does not call `full_clean()`, so a `clean()` method

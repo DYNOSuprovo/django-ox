@@ -224,13 +224,17 @@ no application code.
 
 Already-enqueued tasks are not cancelled. An edit applies to the next tick.
 
-One limit worth knowing. A schedule carries the timing its boundary was set
-for, so a retime done with `queryset.update()` or a fixture is noticed: the tick
-from the old definition does not fire, and the boundary moves onto the new
-timing at the next pass. Pausing and resuming that way is **not** noticed,
-because the row ends with exactly the values it started with and nothing can see
-that it went anywhere in between. Use `update_schedule` to pause and resume, or
-the admin, which calls it.
+One limit worth knowing. A schedule carries a record of the timing and the
+pause state its boundary was set for, so a retime or a pause done with
+`queryset.update()` or a fixture is noticed at the next read: the tick from the
+old definition does not fire, and the boundary moves to the moment the change
+was found, which is not the moment it was made. Two things that record cannot
+see. A change made and reverted between two reads, a pause and a resume inside
+one `SCHEDULE_RECONCILE_INTERVAL` with no read between them, leaves the row as
+it was, so nothing notices and one tick from inside the pause can fire on the
+resume. And a tick between a raw edit and the read that finds it is judged by
+the old definition until then. `update_schedule`, and the admin that calls it,
+move the boundary at the moment of the change and have neither gap.
 
 ### Renaming is safe
 
@@ -282,10 +286,10 @@ The shape is familiar. The differences that will surprise you:
 | --- | --- | --- |
 | What a row names | any registered task, free text | a key you exposed in code |
 | Intervals | measured from the last run | counted from a fixed instant |
-| Pause and resume | depends how you paused; one path fires on resume | never fires what was missed |
+| Pause and resume | depends how you paused; one path fires on resume | fires nothing from inside the pause; a bulk pause and resume with no read between them can fire one tick |
 | Retiming | evaluated against the old `last_run_at` | reschedules from the moment of the change |
 | Scheduler | one beat process, and only one | every worker, coordinated by a unique constraint |
-| Bulk `update()` | needs `PeriodicTasks.update_changed()` by hand | detected, because the check is derived from the row |
+| Bulk `update()` | needs `PeriodicTasks.update_changed()` by hand | noticed at the next read, from the row itself; not a change made and reverted between two reads |
 
 `manage.py ox_import_beat_schedules` reads your existing table and prints the
 registry entries and `create_schedule` calls it would take. It writes nothing:

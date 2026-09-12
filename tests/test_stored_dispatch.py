@@ -530,21 +530,110 @@ class TestTheBoundaryMustMatchTheTiming:
         row.refresh_from_db()
         assert row.boundary_for == boundary_digest(row)
 
-    def test_a_raw_disable_and_re_enable_is_not_detected(self, worker):
+    def test_a_raw_pause_and_resume_with_no_read_between_is_not_detected(self, worker):
         """
         The documented limit, asserted so it cannot drift into a surprise.
 
         A digest cannot see a round trip. Disabling and re-enabling outside
-        the write API leaves every column it covers exactly as it found
-        them, so the boundary still looks current and a tick from before the
-        resume can fire. update_schedule moves the boundary; queryset.update
-        does not.
+        the write API with no read in between leaves every column it covers
+        exactly as it found them, so the boundary still looks current and a
+        tick from before the resume can fire. update_schedule moves the
+        boundary at the moment of the change; queryset.update leaves it to
+        the next read.
         """
         row = a_minutely()
         worker._schedule_source.schedules()
         OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
         OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
         assert worker.dispatch_schedules() == 1
+
+    def test_a_raw_pause_a_read_found_does_not_replay_on_a_raw_resume(
+        self, worker, monkeypatch
+    ):
+        """
+        Pause at T+30 with queryset.update, let the T+60 tick pass while
+        paused, resume at T+80 the same way, and the pass at T+90 must not
+        fire T+60. The pause was seen by a read at T+40, so the boundary
+        moved then; the resume is seen at T+90 and moves it again.
+        """
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(second=0, microsecond=0)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+        row = a_minutely(start_time=base - timedelta(minutes=5))
+        worker._schedule_source._reconcile_interval = 0
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        at(10)
+        assert worker.dispatch_schedules() == 1, "T fires"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(40)
+        assert worker.dispatch_schedules() == 0, "paused"
+        at(80)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
+        at(90)
+        assert worker.dispatch_schedules() == 0, "T+60 came due inside the pause"
+        fired = sorted(
+            (t - base).total_seconds()
+            for t in OxScheduleTick.objects.exclude(task_id=None).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+        assert fired == [0], f"replayed a tick from inside the pause: {fired}"
+        at(130)
+        assert worker.dispatch_schedules() == 1, "the schedule has resumed"
+
+    def test_a_raw_pause_met_at_dispatch_does_not_replay_on_a_raw_resume(
+        self, worker, monkeypatch
+    ):
+        """
+        The other way a pause is found: no full read falls between the
+        pause and the tick, so the worker meets the disabled row under the
+        lock at dispatch. That sighting has to move the boundary too, on the
+        next pass, or a raw resume found by the next full read replays the
+        tick that came due inside the pause.
+        """
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(second=0, microsecond=0)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+        row = a_minutely(start_time=base - timedelta(minutes=5))
+        source = worker._schedule_source
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        at(10)
+        assert worker.dispatch_schedules() == 1, "T fires"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        # The reconcile interval is on the monotonic clock and has not
+        # elapsed, and a bulk update bumps no marker, so the cached copy
+        # stands and the pause is met under the lock.
+        at(70)
+        assert worker.dispatch_schedules() == 0, "refused under the lock"
+        assert row.pk in source._needs_heal, "the pause seen at dispatch was not kept"
+        at(75)
+        assert worker.dispatch_schedules() == 0
+        at(80)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=True)
+        source._reconcile_interval = 0  # the next call is a full read
+        at(90)
+        assert worker.dispatch_schedules() == 0, "T+60 came due inside the pause"
+        fired = sorted(
+            (t - base).total_seconds()
+            for t in OxScheduleTick.objects.exclude(task_id=None).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+        assert fired == [0], f"replayed a tick from inside the pause: {fired}"
+        at(130)
+        assert worker.dispatch_schedules() == 1, "the schedule has resumed"
 
     def test_the_same_pause_through_the_write_api_is_detected(self, worker):
         row = a_minutely()

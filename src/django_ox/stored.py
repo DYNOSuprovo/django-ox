@@ -45,20 +45,22 @@ _UNREAD = object()
 TIMING_FIELDS = frozenset({"trigger", "cron", "every_seconds", "phase_seconds"})
 
 #: What the activation boundary is a boundary *for*: the columns that
-#: decide which instants a schedule wants.
+#: decide which instants a schedule wants, and whether it wants any.
 #:
-#: `enabled` is deliberately not here. A digest cannot see a round trip: a
-#: schedule disabled and re-enabled outside the write API ends with the same
-#: value it started with, so the digest is unchanged and the boundary looks
-#: current. Including it would add a spurious move on every disable and
-#: still miss the case it was meant to catch. Pausing and resuming through
-#: `update_schedule` moves the boundary; doing it with `queryset.update`
-#: does not, and that is documented rather than half-guarded.
+#: `enabled` is here so that a pause made outside the write API moves the
+#: boundary the way one made through `update_schedule` does. A digest still
+#: cannot see a round trip: a schedule disabled and re-enabled between two
+#: reads ends with the value it started with, and the boundary looks
+#: current. What it can see is each state a read lands on. A pause a read
+#: finds moves the boundary to that read, and the resume, at the next read,
+#: moves it again, so a tick that came due inside the pause is behind the
+#: boundary by the time the schedule fires again. A pause and resume with
+#: no read between them are invisible, and the docs say so.
 #:
-#: Timing has no such round-trip problem in practice, and where it does the
-#: digest is right to say nothing: a cron changed to something else and back
-#: again is a boundary that still matches the timing it was set for.
-BOUNDARY_FIELDS = frozenset(TIMING_FIELDS)
+#: Timing has the same round-trip property, and there the digest is right
+#: to say nothing: a cron changed to something else and back again is a
+#: boundary that still matches the timing it was set for.
+BOUNDARY_FIELDS = frozenset(TIMING_FIELDS | {"enabled"})
 
 
 def stored_value(schedule: OxSchedule, field: str) -> Any:
@@ -440,6 +442,15 @@ class DatabaseScheduleSource:
         if changed_at == self._seen_change and not self._due_for_a_full_read():
             return self._cached
         self._cached = self._build()
+        if self._needs_heal:
+            # Found by this read, healed by this read. Deferred to the next
+            # call, a row that changes again in between can match its
+            # digest once more, so the heal is skipped and the boundary
+            # never moves: a pause seen here and a raw resume before the
+            # next call would fire the tick that came due in between. The
+            # heal bumps the marker, so the next call reads again anyway.
+            self._heal()
+            self._cached = self._build()
         self._seen_change = changed_at
         self._last_read = time.monotonic()
         return self._cached
@@ -454,9 +465,8 @@ class DatabaseScheduleSource:
         that a worker watches. Without a periodic read those rows are
         invisible until something unrelated happens to bump the marker.
 
-        A schedule that is disabled is not read at all, so it cannot be
-        noticed any other way: it is not in the cache to be refreshed and
-        it is not in the query that builds one.
+        A schedule that is disabled is not in the cache, so a raw re-enable
+        cannot be noticed any other way: this read is what finds it.
 
         The marker is what makes an ordinary edit visible within a second.
         This is the backstop, and it is one indexed read of a small table.
@@ -510,15 +520,23 @@ class DatabaseScheduleSource:
 
     def _build(self) -> list[Any]:
         built = []
-        for row in OxSchedule.objects.using(self._db_alias).filter(enabled=True):
-            # Checked here, where every enabled row is read whether or not
-            # a tick of it is due. At dispatch it would sit behind the
-            # snapshot's own filters, so a row whose cached copy said "not
-            # due" would never reach it: an expired end_time, a boundary in
-            # the future, or a period long enough that the next tick is
-            # months away would each hide that the row had changed.
+        # Every row, the disabled ones included. A disabled row is not
+        # dispatched, but its boundary can be stale: a pause made outside
+        # the write API leaves the boundary set for the enabled state, and
+        # moving it now is what stops a raw resume from firing a tick that
+        # came due inside the pause. This is the only read that sees a
+        # disabled row at all.
+        for row in OxSchedule.objects.using(self._db_alias).all():
+            # Checked here, where every row is read whether or not a tick
+            # of it is due. At dispatch it would sit behind the snapshot's
+            # own filters, so a row whose cached copy said "not due" would
+            # never reach it: an expired end_time, a boundary in the
+            # future, or a period long enough that the next tick is months
+            # away would each hide that the row had changed.
             if row.boundary_for != boundary_digest(row):
                 self._needs_heal.add(row.pk)
+            if not row.enabled:
+                continue
             try:
                 built.append(self._to_schedule(row))
             except Exception as exc:
@@ -632,6 +650,12 @@ class DatabaseScheduleSource:
             )
             return None
         if row is None or not row.enabled:
+            if row is not None and row.boundary_for != boundary_digest(row):
+                # A pause made outside the write API, met at dispatch
+                # before any full read found it. Healed on the next pass,
+                # so the boundary sits at the pause and a raw resume cannot
+                # fire a tick from inside it.
+                self._needs_heal.add(pk)
             # Drop it from the snapshot too. Returning None alone would
             # leave the row in the cache, so every later pass would plan its
             # tick and take its lock again for a schedule that cannot fire.
