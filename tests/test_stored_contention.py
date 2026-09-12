@@ -2,12 +2,12 @@
 Stored schedules under real contention, on whichever database is configured.
 
 The admission check takes a row lock inside the dispatch transaction, and
-until now this package had nothing that ran concurrent writers against a
-real connection. Reasoning about lock behaviour is not the same as
-observing it, and the mechanism differs by database: PostgreSQL and MySQL
-grant a row lock and re-read the committed row, while SQLite has no row
-locks at all and relies on the conditional UPDATE being the transaction's
-first write to promote it to a writer.
+no existing test held two writers on one schedule row. Reasoning about
+lock behaviour is not the same as observing it, and the mechanism differs
+by database: PostgreSQL and MySQL grant a row lock and re-read the
+committed row, while SQLite has no row locks at all and relies on the
+conditional UPDATE being the transaction's first write to promote it to a
+writer.
 
 Every test here therefore runs on SQLite, PostgreSQL and MySQL alike, and
 the SQLite runs are the ones that matter most: `select_for_update()` is a
