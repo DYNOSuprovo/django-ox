@@ -125,7 +125,13 @@ for your engine.
   nothing.
 - `django_ox.stored.create_schedule`, `update_schedule` and
   `delete_schedule`, the supported programmatic write path. They validate,
-  maintain the boundary and bump the change row. `save()` does not call
+  maintain the boundary and bump the change row. They take the fields a
+  schedule's author owns and refuse the rest with a `TypeError` naming what
+  they do take: the activation boundary, the count of writes to it and the
+  two timestamps are theirs to maintain, and a misspelled field name is
+  reported rather than set on the instance and silently not saved.
+  `create_schedule` still takes `start_time`, which is a new schedule's
+  boundary. `save()` does not call
   `full_clean()`, so a `clean()` method alone would validate what the admin
   submits and nothing that `objects.create()` writes. A valid row written
   that way still runs, with its boundary moved to the read that found it and

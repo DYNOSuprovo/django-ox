@@ -44,6 +44,50 @@ _UNREAD = object()
 
 TIMING_FIELDS = frozenset({"trigger", "cron", "every_seconds", "phase_seconds"})
 
+#: What a caller may hand `update_schedule`. Everything else on the row is
+#: this module's to write. The activation boundary and the count of writes
+#: to it are one mechanism: a worker that found a row stale records both
+#: with its sighting, and a boundary written without the count moving is a
+#: boundary the worker cannot tell has been superseded, so it heals on top
+#: of it and discards the ticks in between. The two timestamps are the
+#: same kind of bookkeeping.
+#:
+#: Naming what is accepted rather than what is refused means a column
+#: added later is refused until it is listed, and a misspelled keyword is
+#: reported instead of being set on the instance and silently not saved.
+WRITABLE_FIELDS = frozenset(
+    {
+        "name",
+        "task_key",
+        "trigger",
+        "cron",
+        "every_seconds",
+        "phase_seconds",
+        "arguments",
+        "enabled",
+        "end_time",
+        "starting_deadline_seconds",
+    }
+)
+
+#: The same, plus the boundary, for `create_schedule`. A row that does not
+#: exist yet has no pending heal to fence and no count to reset, and the
+#: schedules page documents choosing the boundary a schedule starts from.
+CREATABLE_FIELDS = frozenset(WRITABLE_FIELDS | {"start_time"})
+
+
+def _only_writable(fields: dict[str, Any], allowed: frozenset[str], func: str) -> None:
+    """Refuse a keyword this function does not write."""
+    refused = sorted(set(fields) - allowed)
+    if refused:
+        raise TypeError(
+            f"{func}() does not take {', '.join(refused)}. It writes "
+            f"{', '.join(sorted(allowed))}. The activation boundary, the "
+            "count of writes to it and the timestamps are written by "
+            "django_ox.stored."
+        )
+
+
 #: What the activation boundary is a boundary *for*: the columns that
 #: decide which instants a schedule wants, and whether it wants any.
 #:
@@ -237,6 +281,7 @@ def create_schedule(*, user: Any = None, **fields: Any) -> OxSchedule:
     the boundary belongs to the moment the schedule came into existence,
     not to the moment a worker first happens to notice it.
     """
+    _only_writable(fields, CREATABLE_FIELDS, "create_schedule")
     now = timezone.now()
     fields.setdefault("start_time", now)
     schedule = OxSchedule(created_at=now, updated_at=now, **fields)
@@ -266,7 +311,13 @@ def update_schedule(
 
     Enabling a disabled schedule moves the boundary too, so a pause does
     not accumulate a backlog that fires all at once on resume.
+
+    Those rules are the whole of how the boundary moves here, so
+    `start_time` is not a field this takes: writing it directly would move
+    activation without counting the write, and the count is what tells a
+    worker holding a pending heal that its sighting has been superseded.
     """
+    _only_writable(fields, WRITABLE_FIELDS, "update_schedule")
     # From the database, not from the instance. The admin hands this function
     # form.instance, which ModelForm._post_clean has already updated, so the
     # in-memory value is the new one and a re-enable through the change form

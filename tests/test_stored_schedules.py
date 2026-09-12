@@ -9,7 +9,12 @@ from django.utils import timezone
 
 from django_ox.models import OxSchedule, OxScheduleChange
 from django_ox.registry import ArgsForm, ScheduleKind, register
-from django_ox.stored import boundary_digest, create_schedule, update_schedule
+from django_ox.stored import (
+    WRITABLE_FIELDS,
+    boundary_digest,
+    create_schedule,
+    update_schedule,
+)
 
 from . import tasks
 
@@ -83,6 +88,78 @@ class TestTheRegistryIsTheBoundary:
             updated_at=timezone.now(),
         )
         assert row.pk is not None
+
+
+class TestTheWriteApiWritesOnlyWhatACallerOwns:
+    """
+    The activation boundary and the count of writes to it are one
+    mechanism. A worker that finds a row stale records both with its
+    sighting and compares both under the row's lock, so a boundary moved
+    without the count moving is a boundary the worker cannot tell has been
+    superseded: it heals on top of it and discards every tick in between.
+    Neither is a caller's to set, and the admin already treats them that
+    way.
+    """
+
+    def test_update_will_not_move_the_boundary_directly(self):
+        row = a_cron()
+        before = (row.start_time, row.boundary_generation)
+        with pytest.raises(TypeError) as caught:
+            update_schedule(row, start_time=timezone.now() + timedelta(days=3650))
+        assert "start_time" in str(caught.value)
+        row.refresh_from_db()
+        assert (row.start_time, row.boundary_generation) == before
+
+    def test_update_will_not_reset_the_count_of_boundary_writes(self):
+        row = a_cron()
+        update_schedule(row, cron="0 3 * * *")
+        row.refresh_from_db()
+        assert row.boundary_generation == 1
+        with pytest.raises(TypeError) as caught:
+            update_schedule(row, boundary_generation=0)
+        assert "boundary_generation" in str(caught.value)
+        row.refresh_from_db()
+        assert row.boundary_generation == 1
+
+    def test_create_will_not_start_the_count_anywhere_but_zero(self):
+        with pytest.raises(TypeError):
+            a_cron(boundary_generation=99)
+        assert not OxSchedule.objects.exists(), "a refused call wrote a row"
+
+    def test_create_still_takes_the_boundary_it_documents(self):
+        when = timezone.now() - timedelta(days=2)
+        row = a_cron(start_time=when)
+        assert row.start_time == when
+        assert row.boundary_generation == 0
+
+    def test_a_misspelled_field_is_reported_rather_than_dropped(self):
+        # setattr on the instance takes any name, so before this an
+        # update_schedule(cronn=...) reported success and changed nothing.
+        row = a_cron()
+        with pytest.raises(TypeError) as caught:
+            update_schedule(row, cronn="0 3 * * *")
+        assert "cronn" in str(caught.value)
+        row.refresh_from_db()
+        assert row.cron == "0 2 * * *"
+
+    def test_every_column_is_a_caller_s_or_this_module_s(self):
+        # A column added later belongs to neither set until it is put in
+        # one, so it cannot quietly become writable, or quietly stop being.
+        package_written = {
+            "id",
+            "start_time",
+            "boundary_for",
+            "boundary_generation",
+            "created_at",
+            "updated_at",
+        }
+        columns = {field.name for field in OxSchedule._meta.concrete_fields}
+        assert columns == WRITABLE_FIELDS | package_written
+
+    def test_every_field_the_admin_submits_is_still_accepted(self):
+        from django_ox.admin import OxScheduleForm
+
+        assert set(OxScheduleForm.Meta.fields) <= WRITABLE_FIELDS
 
 
 class TestArgumentValidation:
