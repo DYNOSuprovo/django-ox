@@ -139,7 +139,11 @@ for your engine.
 - A Django admin for stored schedules, the first write surface this package
   offers. The task field is a choice drawn from the registry, so it cannot
   express a task the code has not exposed, and the same membership check runs
-  again on the model for the write paths that build no form. Saving routes
+  again on the model for the write paths that build no form. A registry
+  entry's own `permission` comes back as an error on that field, with the
+  submission intact, rather than as a bare 403 that discards it; the
+  permission itself is enforced in `django_ox.stored` as before, on every
+  write path. Saving routes
   through `django_ox.stored`, so a schedule retimed in the admin gets its
   activation boundary moved rather than keeping one set for its old timing.
   Actions enable, disable, and run a schedule once immediately; a manual run

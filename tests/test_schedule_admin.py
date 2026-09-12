@@ -577,6 +577,111 @@ class TestTheDispatchingBackendIsFoundByClassNotByName:
         assert OxTask.objects.get().backend_name == "default"
 
 
+class TestARefusedTaskKeyIsAFieldErrorAndNotA403:
+    """
+    A registry entry may declare its own permission. The write functions
+    enforce it on every path and that is where the guarantee lives, so
+    nothing unpermitted has ever been written. What the add form did was
+    offer the key, take the whole submission, and answer a bare 403: no
+    admin chrome, no link back, no field error, and every value the person
+    typed discarded. The same form answers any other validation failure
+    with the page and the values intact.
+
+    The dropdown deliberately still offers every registered key. Narrowing
+    it per user would make the change form for an existing restricted row
+    fail on its own key, and it hides which keys exist rather than saying
+    what is needed.
+    """
+
+    def _add(self, client, **over):
+        data = {
+            "name": "payroll-run",
+            "task_key": "restricted",
+            "trigger": "cron",
+            "cron": "0 2 * * *",
+            "arguments": "{}",
+            "phase_seconds": 0,
+            "enabled": "on",
+        }
+        data.update(over)
+        return client.post(reverse(ADD_URL), data), data
+
+    def test_the_refusal_comes_back_as_a_field_error(self, client, staff_user):
+        client.force_login(staff_user)
+        response, _ = self._add(client)
+        assert response.status_code == 200, "a bare 403 discarded the submission"
+        errors = response.context["adminform"].form.errors
+        assert "task_key" in errors
+        assert "auth.view_user" in str(errors["task_key"]), (
+            "the error does not name the permission that would allow it"
+        )
+        assert not OxSchedule.objects.filter(name="payroll-run").exists()
+
+    def test_what_the_person_typed_is_still_there(self, client, staff_user):
+        client.force_login(staff_user)
+        response, _ = self._add(client)
+        body = response.content.decode()
+        for value in ("payroll-run", "0 2 * * *"):
+            assert value in body, f"{value!r} was discarded by the refusal"
+
+    def test_the_same_submission_with_the_permission_is_written(
+        self, client, staff_user
+    ):
+        staff_user.user_permissions.add(Permission.objects.get(codename="view_user"))
+        client.force_login(User.objects.get(pk=staff_user.pk))
+        response, _ = self._add(client)
+        assert response.status_code == 302
+        assert OxSchedule.objects.get(name="payroll-run").task_key == "restricted"
+
+    def test_retargeting_an_allowed_row_at_a_refused_key_is_a_field_error(
+        self, client, staff_user
+    ):
+        row = a_schedule(name="plain")
+        client.force_login(staff_user)
+        response = client.post(
+            reverse(CHANGE_URL, args=[row.pk]),
+            {
+                "name": "plain",
+                "task_key": "restricted",
+                "trigger": "cron",
+                "cron": "0 2 * * *",
+                "arguments": "{}",
+                "phase_seconds": 0,
+                "enabled": "on",
+            },
+        )
+        assert response.status_code == 200
+        assert "task_key" in response.context["adminform"].form.errors
+        row.refresh_from_db()
+        assert row.task_key == "report", "the row was retargeted anyway"
+
+    def test_the_dropdown_still_offers_every_registered_key(self, client, staff_user):
+        # Not a filter: a narrowed dropdown would make the change form for
+        # an existing restricted row fail on the key the row already holds.
+        client.force_login(staff_user)
+        response = client.get(reverse(ADD_URL))
+        field = response.context["adminform"].form.fields["task_key"]
+        assert [key for key, _ in field.choices] == ["report", "restricted"]
+
+    def test_an_unrestricted_key_is_untouched(self, client, staff_user):
+        client.force_login(staff_user)
+        response, _ = self._add(client, task_key="report")
+        assert response.status_code == 302
+        assert OxSchedule.objects.get(name="payroll-run").task_key == "report"
+
+    def test_the_write_function_still_refuses_without_a_form(self, staff_user):
+        # The guarantee is in django_ox.stored and stays there: the form
+        # only puts the refusal in front of the person.
+        with pytest.raises(PermissionDenied):
+            create_schedule(
+                name="no-form",
+                task_key="restricted",
+                trigger="cron",
+                cron="0 2 * * *",
+                user=staff_user,
+            )
+
+
 class TestReEnableThroughTheChangeForm:
     def test_the_boundary_moves(self, client, admin_user):
         # Through the form, not the action. save_model hands update_schedule

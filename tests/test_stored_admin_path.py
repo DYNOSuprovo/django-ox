@@ -192,9 +192,12 @@ class TestPerKeyPermissionFromSettings:
                 name="purge", task_key=PURGE, arguments=json.dumps({"value": "x"})
             ),
         )
-        # The service layer raises PermissionDenied out of save_model, which
-        # Django's handler turns into a 403 page.
-        assert response.status_code == 403
+        # The form asks the same question the service layer answers, so the
+        # refusal comes back on the field with the submission intact rather
+        # than as a bare 403 out of save_model.
+        assert response.status_code == 200
+        errors = response.context["adminform"].form.errors
+        assert PURGE_PERMISSION in str(errors["task_key"])
         assert not OxSchedule.objects.filter(name="purge").exists()
 
     def test_accepted_with_it(self, client, staff):

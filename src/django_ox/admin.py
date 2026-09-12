@@ -12,11 +12,13 @@ report counts.
 
 from __future__ import annotations
 
+from copy import copy
 from typing import TYPE_CHECKING, Any, cast
 
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
@@ -220,7 +222,18 @@ class OxScheduleForm(_ScheduleForm):
     The field is a choice rather than a text input because a text input
     would let anyone holding the change permission name any importable
     callable.
+
+    The choices are every registered key, not the ones this user may
+    schedule. Narrowing them per user would make the change form for an
+    existing restricted row fail validation on the key the row already
+    holds, and it would hide which keys exist rather than saying what is
+    needed to use one. The refusal is a field error instead.
     """
+
+    #: The person submitting, when there is one. OxScheduleAdmin.get_form
+    #: binds it; a form built any other way has none, and then the check
+    #: below is skipped exactly as it is for a write with no `user`.
+    user: Any = None
 
     class Meta:
         model = OxSchedule
@@ -269,8 +282,35 @@ class OxScheduleForm(_ScheduleForm):
         ) or (cleaned.get("enabled") and not self.instance.enabled)
         return timezone.now() if moved else self.instance.start_time
 
+    def _check_the_registry_permission(self, cleaned: dict[str, Any]) -> None:
+        """
+        Put a registry entry's own permission in front of the person.
+
+        django_ox.stored enforces it on every write path, form or no form,
+        and that is where the guarantee lives; nothing unpermitted has ever
+        been written. But the refusal arrived out of save_model as a bare
+        403: no admin chrome, no link back, no field error, and every value
+        the person had typed discarded. This form answers any other
+        validation failure with the page and the values intact, so the
+        refusal an advertised feature produces was the one it handled
+        worst.
+
+        Checked against a copy of the instance, so an object-level
+        permission backend sees the row it would see at the write.
+        """
+        task_key = cleaned.get("task_key")
+        if not task_key:
+            return
+        candidate = copy(self.instance)
+        candidate.task_key = task_key
+        try:
+            stored.check_permission(candidate, self.user)
+        except PermissionDenied as exc:
+            self.add_error("task_key", str(exc))
+
     def clean(self) -> dict[str, Any]:
         cleaned = cast("dict[str, Any]", super().clean())
+        self._check_the_registry_permission(cleaned)
         end_time = cleaned.get("end_time")
         if end_time is not None and end_time <= self._effective_start_time(cleaned):
             # As a field error rather than an exception out of the save. The
@@ -305,6 +345,24 @@ class OxScheduleAdmin(_ScheduleAdmin):
     ordering = ("name",)
     actions = ("enable_selected", "disable_selected", "run_once_now")
     readonly_fields = ("start_time", "created_at", "updated_at")
+
+    def get_form(
+        self,
+        request: HttpRequest,
+        obj: OxSchedule | None = None,
+        change: bool = False,  # noqa: FBT001, FBT002 - ModelAdmin's own signature
+        **kwargs: Any,
+    ) -> Any:
+        """
+        Bind the requesting user onto the form class.
+
+        ModelAdmin hands the form class to the change view, which builds it
+        with arguments of its own, so there is no other seam to pass a user
+        through. A subclass per request rather than a partial, because the
+        admin also reads `base_fields` off what this returns.
+        """
+        form_class = super().get_form(request, obj, change=change, **kwargs)
+        return type(form_class.__name__, (form_class,), {"user": request.user})
 
     @admin.display(description="Timing")
     def timing(self, obj: OxSchedule) -> str:
