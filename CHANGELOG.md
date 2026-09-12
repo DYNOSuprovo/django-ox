@@ -154,11 +154,13 @@ for your engine.
   and says how many of the schedules it ran were disabled or already ended, and
   how many it was refused by a registry entry's own permission.
   The changelist carries `end_time`, so a row that has ended is visible where
-  the selection is made. The backend a manual run enqueues through is found by
-  importing `OPTIONS["SCHEDULE_SOURCE"]` and testing the class, so a project's
-  own subclass of `DatabaseScheduleSource` is found whatever it is called, and
-  is the class the run builds its schedule with. The changelist and the add
-  page say so when no backend names a source at all, because until one does,
+  the selection is made. The backend a manual run enqueues through is found the
+  way the worker finds it: the class `OPTIONS["SCHEDULE_SOURCE"]` names is
+  built and asked whether it answers `schedules()`, so any source the worker
+  would dispatch from is found, whatever it is called and whatever it
+  inherits, and a subclass is the class the run builds its schedule with.
+  The changelist and the add page say so when no backend names a source at
+  all, because until one does,
   a schedule saved there is stored and never dispatched, with nothing else
   to say so: no error, no log, no system check, and a manual run that
   enqueues anyway.

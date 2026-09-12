@@ -591,6 +591,13 @@ class OxScheduleAdmin(_ScheduleAdmin):
             stored.DatabaseScheduleSource,
         )
         source = source_class(options, alias)
+        if not callable(getattr(source, "_to_schedule", None)):
+            # A source is only required to answer schedules(). One that
+            # reaches the rows some other way has nothing for a manual run
+            # to build a single row with, so the shipped reading is used
+            # for that and the project's own alias is still the one the
+            # task is enqueued on.
+            source = stored.DatabaseScheduleSource(options, alias)
         now = timezone.now()
         run, skipped, overridden, refused = 0, 0, 0, 0
         for schedule in queryset:
@@ -646,17 +653,26 @@ class OxScheduleAdmin(_ScheduleAdmin):
         same way the system checks read it: a check must not construct
         every backend in a project to answer a question about a dictionary.
 
-        The path is imported and the class tested, rather than matched by
-        name. A project may point SCHEDULE_SOURCE at its own subclass, and
-        the worker's loader takes any class with a `schedules()` method, so
-        a source called anything at all is a supported configuration. A
-        name test missed every one of them and fell back to the default
-        alias, which either enqueues a manual run to a backend nobody
-        dispatches these schedules from, or reports a healthy schedule as
-        one that cannot run. The class is returned with the options because
-        a subclass that changes how a row becomes a schedule has to be the
-        one the manual run builds with, or the admin runs something the
-        project did not define.
+        The test applied here is the loader's own: build the class the
+        path names and ask whether it answers `schedules()`. Nothing else
+        decides what the worker dispatches from, so nothing else may
+        decide what this page says about it. Matched by name, and then by
+        `issubclass` against the shipped source, a project whose source
+        is written by composition rather than by inheritance -- which the
+        loader documents as supported -- was told its schedules are
+        stored and never dispatched while its worker was dispatching
+        them, and its manual run went to the default alias.
+
+        The cost of taking the loader's answer is that a source which
+        answers `schedules()` without reading the rows counts too. That
+        is the same class of source the worker would run, and the admin
+        has nothing else to read it by; a false warning on a working
+        deployment is the worse of the two.
+
+        The class is returned with the options because a subclass that
+        changes how a row becomes a schedule has to be the one the manual
+        run builds with, or the admin runs something the project did not
+        define.
         """
         for alias, config in settings.TASKS.items():
             options = config.get("OPTIONS") if isinstance(config, dict) else None
@@ -672,8 +688,15 @@ class OxScheduleAdmin(_ScheduleAdmin):
                 # is one backend of several and the page still has to load,
                 # so it is simply not the one.
                 continue
-            if isinstance(source_class, type) and issubclass(
-                source_class, stored.DatabaseScheduleSource
-            ):
+            if not isinstance(source_class, type):
+                continue
+            try:
+                source = source_class(options, str(alias))
+            except Exception:  # noqa: S112 - the worker reports it, not this page
+                # Same reasoning as the failed import: a source that cannot
+                # be built is refused at worker startup and by the system
+                # check, and the admin still has to render.
+                continue
+            if callable(getattr(source, "schedules", None)):
                 return str(alias), options, source_class
         return None

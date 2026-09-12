@@ -10,9 +10,10 @@ from django.utils import timezone
 
 from django_ox.models import OxSchedule, OxTask
 from django_ox.registry import ScheduleKind, register
+from django_ox.schedules import schedule_source_from_options
 from django_ox.stored import create_schedule, update_schedule
 
-from . import tasks
+from . import sources, tasks
 
 pytestmark = pytest.mark.django_db
 
@@ -790,6 +791,105 @@ class TestTheAdminSaysWhenNothingWillDispatchWhatItWrites:
         )
         said = [m for m in self._messages(response) if "never dispatched" in m]
         assert len(said) == 1, f"the same warning was shown twice: {said}"
+
+
+class TestASourceTheWorkerAcceptsIsNotReportedAsUndispatched:
+    """
+    The worker's loader builds the class SCHEDULE_SOURCE names and asks
+    whether it answers schedules(). A source written by composition
+    rather than by subclassing passes that test, and its rows dispatch.
+    Tested here against issubclass instead, such a project was told on
+    the page that its schedules are stored and never dispatched, and its
+    manual run went to a backend that dispatches nothing.
+    """
+
+    def _tasks(self, path):
+        # Both backends serve the same queue, so the enqueue succeeds
+        # either way and the row's backend_name says which was chosen.
+        return {
+            "default": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {},
+            },
+            "sched": {
+                "BACKEND": "django_ox.backend.OxBackend",
+                "QUEUES": ["default"],
+                "OPTIONS": {"SCHEDULE_SOURCE": path},
+            },
+        }
+
+    def _messages(self, response):
+        return [str(m) for m in response.context["messages"]]
+
+    def _warned(self, response):
+        return any("never dispatched" in m for m in self._messages(response))
+
+    def _run(self, client, pk):
+        return client.post(
+            reverse("admin:django_ox_oxschedule_changelist"),
+            {"action": "run_once_now", "_selected_action": [str(pk)]},
+            follow=True,
+        )
+
+    def test_the_worker_reads_the_row_through_it(self, settings):
+        # The claim the admin warning contradicts, made through the
+        # loader the worker itself calls.
+        settings.TASKS = self._tasks("tests.sources.DuckSource")
+        a_schedule()
+        options = settings.TASKS["sched"]["OPTIONS"]
+        source = schedule_source_from_options(options, "sched")
+        assert isinstance(source, sources.DuckSource)
+        assert len(source.schedules()) == 1
+
+    def test_the_changelist_does_not_call_it_undispatched(
+        self, client, admin_user, settings
+    ):
+        settings.TASKS = self._tasks("tests.sources.DuckSource")
+        client.force_login(admin_user)
+        assert not self._warned(
+            client.get(reverse("admin:django_ox_oxschedule_changelist"))
+        )
+
+    def test_the_add_page_does_not_call_it_undispatched(
+        self, client, admin_user, settings
+    ):
+        settings.TASKS = self._tasks("tests.sources.DuckSource")
+        client.force_login(admin_user)
+        assert not self._warned(client.get(reverse(ADD_URL)))
+
+    def test_a_manual_run_goes_to_the_backend_that_dispatches_it(
+        self, client, admin_user, settings
+    ):
+        settings.TASKS = self._tasks("tests.sources.DuckSource")
+        row = a_schedule()
+        client.force_login(admin_user)
+        self._run(client, row.pk)
+        assert OxTask.objects.get().backend_name == "sched"
+
+    def test_a_class_that_answers_nothing_is_still_not_a_source(
+        self, client, admin_user, settings
+    ):
+        # The loader refuses a class it can build that has no
+        # schedules(), and so must this.
+        settings.TASKS = self._tasks("tests.sources.NoSchedulesMethod")
+        row = a_schedule()
+        client.force_login(admin_user)
+        response = self._run(client, row.pk)
+        assert OxTask.objects.get().backend_name == "default"
+        assert self._warned(response)
+
+    def test_a_class_that_cannot_be_built_is_still_not_a_source(
+        self, client, admin_user, settings
+    ):
+        # tests.sources.NotASource takes no arguments. The loader fails on
+        # it; the page has to keep loading and treat it as not the one.
+        settings.TASKS = self._tasks("tests.sources.NotASource")
+        row = a_schedule()
+        client.force_login(admin_user)
+        response = self._run(client, row.pk)
+        assert OxTask.objects.get().backend_name == "default"
+        assert self._warned(response)
 
 
 class TestTheEmptyRegistryHelpTextSaysWhereToPutTheDecorator:

@@ -19,3 +19,27 @@ class CountingSource(DatabaseScheduleSource):
 
 class NotASource:
     """Importable, and not a schedule source."""
+
+
+class DuckSource:
+    """
+    A source built by composition rather than inheritance.
+
+    The worker's loader accepts any class it can build that answers
+    schedules(), so this is a supported configuration and its rows are
+    dispatched. It is not a DatabaseScheduleSource and has no
+    _to_schedule.
+    """
+
+    def __init__(self, options, backend_alias):
+        self._inner = DatabaseScheduleSource(options, backend_alias)
+
+    def schedules(self):
+        return self._inner.schedules()
+
+
+class NoSchedulesMethod:
+    """Builds from the same two arguments and answers nothing."""
+
+    def __init__(self, options, backend_alias):
+        self.options = options
