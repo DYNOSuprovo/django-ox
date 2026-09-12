@@ -87,11 +87,15 @@ for your engine.
   retime or a pause made with a bulk `update()` is noticed too, at the next
   read, and the boundary moves to that read: the worker remembers the
   boundary it found the row stale against, so a row re-enabled the same way
-  before the move is written still gets it. A change made and reverted
-  between two reads is not, and the schedules page says what that means for a
-  bulk pause and resume. Ticks are recorded against the row, as `db:<id>`, so
-  renaming a schedule keeps its history; a settings-declared schedule may not
-  use that prefix, and `manage.py check` refuses one that does.
+  before the move is written still gets it. However many workers find the row
+  stale together, only the first of them moves the boundary: the row counts
+  its boundary writes and each worker records the count it saw, because a heal
+  writes the boundary to its own clock, and writing it is not the same as
+  changing it. A change made and reverted between two reads is not, and the
+  schedules page says what that means for a bulk pause and resume. Ticks are
+  recorded against the row, as `db:<id>`, so renaming a schedule keeps its
+  history; a settings-declared schedule may not use that prefix, and
+  `manage.py check` refuses one that does.
 - `start_time` and `end_time` bound which ticks of a stored schedule fire, and
   `starting_deadline_seconds` drops a tick that is later than the deadline
   rather than running it however stale. The deadline is judged under the

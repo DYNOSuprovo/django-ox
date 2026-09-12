@@ -720,6 +720,139 @@ class TestTheBoundaryMustMatchTheTiming:
             "a boundary the write API had already moved was moved again"
         )
 
+    def test_a_boundary_one_heal_moved_is_not_moved_again_by_the_next(
+        self, worker, monkeypatch
+    ):
+        """
+        Two workers queue the same sighting, and only the first may heal.
+
+        The fence cannot rest on the boundary columns coming back
+        different. A heal writes `start_time=now`, and `now` is not
+        guaranteed to differ from the start time the sighting recorded:
+        two workers' clocks disagree, a clock steps back over an NTP
+        correction, or the clock is coarse enough that the boundary write
+        and the heal land in the same granule. The first heal then writes
+        exactly the pair the sighting saw, and a second heal that asked
+        only whether those columns moved would move the boundary again, to
+        its own much later clock, discarding every tick in between.
+        """
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(second=0, microsecond=0)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        at(5)
+        row = create_schedule(
+            name="minutely", task_key="report", trigger="cron", cron="* * * * *"
+        )
+        assert row.start_time == base + timedelta(seconds=5)
+        second = Worker(backoff_initial=0)
+        at(10)
+        assert worker.dispatch_schedules() == 0, "T is before the boundary"
+        at(11)
+        assert second.dispatch_schedules() == 0, "T is before the boundary"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(cron="0 3 * * *")
+        at(70)
+        assert worker.dispatch_schedules() == 0, "refused under the lock"
+        at(71)
+        assert second.dispatch_schedules() == 0, "refused under the lock"
+        assert row.pk in worker._schedule_source._needs_heal
+        assert row.pk in second._schedule_source._needs_heal
+        at(72)
+        OxSchedule.objects.filter(pk=row.pk).update(cron="* * * * *")
+        # This worker's clock reads the instant the boundary was written
+        # at, so its heal writes back the very pair the sighting saw.
+        at(5)
+        assert worker.dispatch_schedules() == 0
+        row.refresh_from_db()
+        assert row.start_time == base + timedelta(seconds=5)
+        # Its write moved no column, so the count is the only record that
+        # it happened, and the only thing the next heal can read it from.
+        assert row.boundary_generation == 1, "the first heal did not run"
+        # T+120 comes due with nobody dispatching, and the other worker's
+        # pass is the one that should fire it.
+        at(150)
+        fired_now = second.dispatch_schedules()
+        row.refresh_from_db()
+        assert (row.start_time, row.boundary_generation) == (
+            base + timedelta(seconds=5),
+            1,
+        ), "a second heal moved a boundary the first heal had already set"
+        assert fired_now == 1
+        fired = sorted(
+            (t - base).total_seconds()
+            for t in OxScheduleTick.objects.exclude(task_id=None).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+        assert fired == [120], f"the tick between the two heals was lost: {fired}"
+
+    def test_a_write_api_resume_that_rewrites_the_pair_still_fences_the_heal(
+        self, worker, monkeypatch
+    ):
+        """
+        The same fence, with the write API on the other side of it.
+
+        `update_schedule` sets the boundary to its own clock too, so a
+        resume whose clock reads the instant the boundary was last written
+        at leaves both columns as the sighting saw them. The worker's
+        pending heal has to skip anyway: the resume owns the boundary now,
+        and a heal on top of it would move activation to the worker's
+        later clock and drop the ticks before it.
+        """
+        from django.utils import timezone as tz
+
+        base = tz.now().replace(second=0, microsecond=0)
+        clock = {"now": base}
+        monkeypatch.setattr(tz, "now", lambda: clock["now"])
+
+        def at(seconds):
+            clock["now"] = base + timedelta(seconds=seconds)
+
+        at(5)
+        row = create_schedule(
+            name="minutely", task_key="report", trigger="cron", cron="* * * * *"
+        )
+        source = worker._schedule_source
+        at(10)
+        assert worker.dispatch_schedules() == 0, "T is before the boundary"
+        at(30)
+        OxSchedule.objects.filter(pk=row.pk).update(enabled=False)
+        at(70)
+        assert worker.dispatch_schedules() == 0, "refused under the lock"
+        assert row.pk in source._needs_heal
+        # The write API's clock reads the instant the boundary was written
+        # at, so the resume writes the columns back exactly as they stood.
+        at(5)
+        update_schedule(row, enabled=True)
+        row.refresh_from_db()
+        assert (row.boundary_for, row.start_time, row.boundary_generation) == (
+            boundary_digest(row),
+            base + timedelta(seconds=5),
+            1,
+        ), "the resume did not rewrite the pair the sighting saw, and count it"
+        source._reconcile_interval = 0  # the next call is a full read
+        at(150)
+        fired_now = worker.dispatch_schedules()
+        row.refresh_from_db()
+        assert (row.start_time, row.boundary_generation) == (
+            base + timedelta(seconds=5),
+            1,
+        ), "a heal moved a boundary the write API had already written"
+        assert fired_now == 1
+        fired = sorted(
+            (t - base).total_seconds()
+            for t in OxScheduleTick.objects.exclude(task_id=None).values_list(
+                "scheduled_for", flat=True
+            )
+        )
+        assert fired == [120], f"the tick after the resume was lost: {fired}"
+
     def test_the_same_pause_through_the_write_api_is_detected(self, worker):
         row = a_minutely()
         worker._schedule_source.schedules()

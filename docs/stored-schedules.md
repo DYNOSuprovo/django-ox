@@ -232,13 +232,15 @@ One limit worth knowing. A schedule carries a record of the timing and the
 pause state its boundary was set for, so a retime or a pause done with
 `queryset.update()` or a fixture is noticed at the next read: the tick from the
 old definition does not fire, and the boundary moves to the moment the change
-was found, which is not the moment it was made. Two things that record cannot
-see. A change made and reverted between two reads, a pause and a resume inside
-one `SCHEDULE_RECONCILE_INTERVAL` with no read between them, leaves the row as
-it was, so nothing notices and one tick from inside the pause can fire on the
-resume. And a tick between a raw edit and the read that finds it is judged by
-the old definition until then. `update_schedule`, and the admin that calls it,
-move the boundary at the moment of the change and have neither gap.
+was found, which is not the moment it was made. However many workers find the
+change together, only the first of them moves the boundary. Two things that
+record cannot see. A change made and reverted between two reads, a pause and a
+resume inside one `SCHEDULE_RECONCILE_INTERVAL` with no read between them,
+leaves the row as it was, so nothing notices and one tick from inside the pause
+can fire on the resume. And a tick between a raw edit and the read that finds it
+is judged by the old definition until then. `update_schedule`, and the admin
+that calls it, move the boundary at the moment of the change and have neither
+gap.
 
 ### Renaming is safe
 

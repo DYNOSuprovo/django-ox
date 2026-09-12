@@ -240,7 +240,9 @@ def create_schedule(*, user: Any = None, **fields: Any) -> OxSchedule:
     now = timezone.now()
     fields.setdefault("start_time", now)
     schedule = OxSchedule(created_at=now, updated_at=now, **fields)
-    schedule.full_clean(exclude=["boundary_for", "created_at", "updated_at"])
+    schedule.full_clean(
+        exclude=["boundary_for", "boundary_generation", "created_at", "updated_at"]
+    )
     # After the clean, so the digest is over the values that will be stored.
     schedule.boundary_for = boundary_digest(schedule)
     check_permission(schedule, user)
@@ -306,8 +308,17 @@ def update_schedule(
         # not move the boundary, so it is stale whatever this call changes.
         if retimed or resumed or stale_boundary:
             current.start_time = now
+            # Counted here and nowhere else in this function: a call that
+            # changes nothing the boundary is for rewrites boundary_for to
+            # the value it already held and leaves start_time alone, which
+            # is not a boundary write and must not fence a worker's
+            # pending heal. Under this row's lock, so the read the
+            # increment is computed from cannot move under it.
+            current.boundary_generation = F("boundary_generation") + 1
         current.updated_at = now
-        current.full_clean(exclude=["boundary_for", "created_at", "updated_at"])
+        current.full_clean(
+            exclude=["boundary_for", "boundary_generation", "created_at", "updated_at"]
+        )
         # After the clean, so the digest is over the values that will be stored.
         current.boundary_for = boundary_digest(current)
         check_permission(current, user)
@@ -392,7 +403,8 @@ class DatabaseScheduleSource:
         self._cached: list[Any] = []
         self._seen_change: Any = _UNREAD
         #: Rows whose boundary was found stale, with the boundary as it
-        #: stood when it was found: the digest column and the start time.
+        #: stood when it was found: the digest column, the start time and
+        #: the count of boundary writes.
         #: Healed on the next pass rather than in place: the dispatch
         #: transaction rolls back when a tick is refused, which would take
         #: the heal with it. The observed boundary is what the heal checks
@@ -402,7 +414,7 @@ class DatabaseScheduleSource:
         #: heal that asked only that would skip, leave the boundary where
         #: the pause found it, and fire the tick that came due inside the
         #: pause at the next full read.
-        self._needs_heal: dict[Any, tuple[Any, Any]] = {}
+        self._needs_heal: dict[Any, tuple[Any, Any, Any]] = {}
         #: When the rows were last read in full, on the monotonic clock.
         #: None means never.
         self._last_read: float | None = None
@@ -517,11 +529,27 @@ class DatabaseScheduleSource:
                     # pause, and a boundary from before the wait is in
                     # front of it.
                     now = timezone.now()
-                    if (row.boundary_for, row.start_time) != observed:
+                    if (
+                        row.boundary_for,
+                        row.start_time,
+                        row.boundary_generation,
+                    ) != observed:
                         # Someone wrote the boundary since this worker saw
                         # it stale: another worker's heal, or the write
-                        # API, and every such write sets the start time
-                        # too. Their boundary stands.
+                        # API. Their boundary stands.
+                        #
+                        # The generation is what makes that unconditional.
+                        # A heal sets the start time to its own clock, and
+                        # "sets it" is not "changes it": a healer whose
+                        # clock reads the instant the boundary was written
+                        # at writes the observed pair back unchanged, and
+                        # a fence on the columns alone would let a second
+                        # healer move the boundary again, onto its own
+                        # later clock, discarding the ticks in between.
+                        # Two workers' clocks disagree, a clock steps back
+                        # over a correction, and a coarse clock puts the
+                        # write and the heal in one granule. The count
+                        # moves whatever the clock does.
                         continue
                     # Whether or not the digest matches by now. The row was
                     # seen in a state its boundary was not set for, and
@@ -532,7 +560,9 @@ class DatabaseScheduleSource:
                     # the tick between them still has to be behind the
                     # boundary.
                     OxSchedule.objects.using(self._db_alias).filter(pk=pk).update(
-                        start_time=now, boundary_for=boundary_digest(row)
+                        start_time=now,
+                        boundary_for=boundary_digest(row),
+                        boundary_generation=F("boundary_generation") + 1,
                     )
                     _touch_change_row(self._db_alias)
                 logger.info(
@@ -565,7 +595,11 @@ class DatabaseScheduleSource:
             # future, or a period long enough that the next tick is months
             # away would each hide that the row had changed.
             if row.boundary_for != boundary_digest(row):
-                self._needs_heal[row.pk] = (row.boundary_for, row.start_time)
+                self._needs_heal[row.pk] = (
+                    row.boundary_for,
+                    row.start_time,
+                    row.boundary_generation,
+                )
             if not row.enabled:
                 continue
             try:
@@ -688,7 +722,11 @@ class DatabaseScheduleSource:
                 # so the boundary sits at the pause and a raw resume cannot
                 # fire a tick from inside it, whether the resume lands
                 # before or after the heal.
-                self._needs_heal[pk] = (row.boundary_for, row.start_time)
+                self._needs_heal[pk] = (
+                    row.boundary_for,
+                    row.start_time,
+                    row.boundary_generation,
+                )
             # Drop it from the snapshot too. Returning None alone would
             # leave the row in the cache, so every later pass would plan its
             # tick and take its lock again for a schedule that cannot fire.
@@ -701,7 +739,11 @@ class DatabaseScheduleSource:
             # this worker planned belongs to a definition that no longer
             # applies. Refuse it, and heal on the next pass: the refusal
             # rolls this transaction back and would take the heal with it.
-            self._needs_heal[pk] = (row.boundary_for, row.start_time)
+            self._needs_heal[pk] = (
+                row.boundary_for,
+                row.start_time,
+                row.boundary_generation,
+            )
             return None
         try:
             return self._to_schedule(row)

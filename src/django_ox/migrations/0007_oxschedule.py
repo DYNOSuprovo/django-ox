@@ -53,6 +53,7 @@ class Migration(migrations.Migration):
                     "boundary_for",
                     models.CharField(blank=True, default="", max_length=64),
                 ),
+                ("boundary_generation", models.PositiveIntegerField(default=0)),
                 ("end_time", models.DateTimeField(blank=True, null=True)),
                 (
                     "starting_deadline_seconds",

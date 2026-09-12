@@ -220,6 +220,14 @@ class OxSchedule(models.Model):
     #: at the next read. django_ox.stored says what that can and cannot see.
     #: Written there, never by hand.
     boundary_for = models.CharField(max_length=64, blank=True, default="")
+    #: How many times this package has written the activation boundary.
+    #: A worker that found the boundary stale heals it on a later pass and
+    #: records this count with the sighting, so a second worker holding
+    #: the same sighting can tell that the first one's heal superseded it.
+    #: The columns alone cannot say so: a heal writes `start_time=now`,
+    #: and `now` need not differ from the start time the sighting saw.
+    #: Written by django_ox.stored, never by hand.
+    boundary_generation = models.PositiveIntegerField(default=0)
     end_time = models.DateTimeField(null=True, blank=True)
     starting_deadline_seconds = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField()
