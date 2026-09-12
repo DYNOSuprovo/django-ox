@@ -57,6 +57,23 @@ def a_schedule(**over):
     return create_schedule(**fields)
 
 
+def _form_datetime(at):
+    """
+    Split an instant the way the admin's two-part datetime widget reads it
+    back: in the project's timezone.
+
+    Formatting an aware value straight off a row splits its UTC wall clock
+    instead, so the form reads back an instant a whole UTC offset from the
+    one the row holds. That passes only where the project's zone is west of
+    UTC by more than the margin the test left itself, and the smallest of
+    those margins is an hour. America/Chicago is west by five, so these
+    tests hold under the settings this suite runs; under any zone an hour
+    or more east of UTC they would fail every time.
+    """
+    local = timezone.localtime(at) if timezone.is_aware(at) else at
+    return local.strftime("%Y-%m-%d"), local.strftime("%H:%M:%S")
+
+
 ADD_URL = "admin:django_ox_oxschedule_add"
 CHANGE_URL = "admin:django_ox_oxschedule_change"
 
@@ -410,11 +427,8 @@ class TestAnEndTimeInThePastIsAFieldError:
     def test_adding_one_reports_the_field_rather_than_failing(self, client, admin_user):
         client.force_login(admin_user)
         yesterday = timezone.now() - timedelta(days=1)
-        response = self._post(
-            client,
-            end_time_0=yesterday.strftime("%Y-%m-%d"),
-            end_time_1=yesterday.strftime("%H:%M:%S"),
-        )
+        day, clock = _form_datetime(yesterday)
+        response = self._post(client, end_time_0=day, end_time_1=clock)
         assert response.status_code == 200, "the form should be redisplayed"
         assert "end_time" in response.context["adminform"].form.errors
         assert not OxSchedule.objects.filter(name="nightly").exists()
@@ -422,11 +436,8 @@ class TestAnEndTimeInThePastIsAFieldError:
     def test_a_future_end_time_is_accepted(self, client, admin_user):
         client.force_login(admin_user)
         tomorrow = timezone.now() + timedelta(days=1)
-        response = self._post(
-            client,
-            end_time_0=tomorrow.strftime("%Y-%m-%d"),
-            end_time_1=tomorrow.strftime("%H:%M:%S"),
-        )
+        day, clock = _form_datetime(tomorrow)
+        response = self._post(client, end_time_0=day, end_time_1=clock)
         assert response.status_code == 302
         assert OxSchedule.objects.filter(name="nightly").exists()
 
@@ -438,6 +449,7 @@ class TestAnEndTimeInThePastIsAFieldError:
         row = a_schedule(name="ended")
         past = row.start_time + timedelta(hours=1)
         OxSchedule.objects.filter(pk=row.pk).update(end_time=past)
+        day, clock = _form_datetime(past)
         response = client.post(
             reverse(CHANGE_URL, args=[row.pk]),
             {
@@ -448,8 +460,8 @@ class TestAnEndTimeInThePastIsAFieldError:
                 "arguments": "{}",
                 "phase_seconds": 0,
                 "enabled": "on",
-                "end_time_0": past.strftime("%Y-%m-%d"),
-                "end_time_1": past.strftime("%H:%M:%S"),
+                "end_time_0": day,
+                "end_time_1": clock,
             },
         )
         assert response.status_code == 302, "an unchanged timing must still save"

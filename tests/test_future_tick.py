@@ -25,6 +25,24 @@ MINUTELY = {
 }
 
 
+@pytest.fixture(autouse=True)
+def frozen_now(monkeypatch):
+    """
+    Pin timezone.now() mid-minute for every test in this file.
+
+    Each of them seeds the tick log relative to the current minute and then
+    asks a worker what is due, and the two only agree while the wall clock
+    stays inside one minute. On the real clock a pass that begins at :59.9
+    is asked about the next minute instead: the future tick is still the
+    newest row in the log, the minute now due has none of its own, and the
+    tick these tests say must not fire does. Two of them raced that way,
+    once per minute boundary that landed inside the body.
+    """
+    fixed = timezone.now().replace(second=30, microsecond=0)
+    monkeypatch.setattr(timezone, "now", lambda: fixed)
+    return fixed
+
+
 @pytest.fixture
 def worker(settings):
     settings.TASKS = {

@@ -43,6 +43,26 @@ def _registry(monkeypatch):
 
 
 @pytest.fixture
+def frozen_now(monkeypatch):
+    """
+    Pin timezone.now() mid-minute, for a test whose reads must share one.
+
+    Dispatch derives its tick by flooring the clock to the minute, so a
+    test that reads the clock, writes a row or a tick against it and then
+    asks a worker what is due only holds while every one of those reads
+    lands in the same minute. On the real clock a minute boundary falling
+    inside the body moves the due tick to an instant nothing has recorded,
+    and the schedule fires where the test says it must not, or fires twice.
+
+    Not autouse: two tests here read the clock to watch a value advance,
+    and a pinned clock would stop it.
+    """
+    fixed = timezone.now().replace(second=30, microsecond=0)
+    monkeypatch.setattr(timezone, "now", lambda: fixed)
+    return fixed
+
+
+@pytest.fixture
 def worker(settings):
     settings.TASKS = tasks_setting()
     return Worker(backoff_initial=0)
@@ -86,6 +106,7 @@ class TestABoundaryReplacesTheAnchor:
         update_schedule(row, end_time=row.start_time + timedelta(seconds=1))
         assert worker.dispatch_schedules() == 0
 
+    @pytest.mark.usefixtures("frozen_now")
     def test_the_same_tick_fires_only_once(self, worker):
         a_minutely()
         assert worker.dispatch_schedules() == 1
@@ -270,6 +291,7 @@ class TestFreshness:
         assert source.schedules() == []
 
 
+@pytest.mark.usefixtures("frozen_now")
 def test_a_schedule_created_mid_minute_waits_for_the_next_tick(worker):
     # Created at 14:37:41 with a minutely cron, the 14:37:00 tick is before
     # the boundary: at that instant the schedule did not exist. It fires at
@@ -370,6 +392,7 @@ class TestRenamingCannotSplitTheCoordination:
         monkeypatch.setattr(worker._schedule_source, "schedules", lambda: held)
         return held
 
+    @pytest.mark.usefixtures("frozen_now")
     def test_a_rename_mid_flight_still_fires_once(self, worker, monkeypatch):
         row = a_minutely(name="old")
         self._hold(worker, monkeypatch)  # worker holds name="old"
@@ -428,6 +451,7 @@ class TestTheDecisionComesFromTheRow:
         monkeypatch.setattr(worker._schedule_source, "schedules", lambda: held)
         return held
 
+    @pytest.mark.usefixtures("frozen_now")
     def test_a_resumed_schedule_does_not_fire_a_pre_resume_tick(
         self, worker, monkeypatch
     ):
@@ -853,6 +877,7 @@ class TestTheBoundaryMustMatchTheTiming:
         )
         assert fired == [120], f"the tick after the resume was lost: {fired}"
 
+    @pytest.mark.usefixtures("frozen_now")
     def test_the_same_pause_through_the_write_api_is_detected(self, worker):
         row = a_minutely()
         worker._schedule_source.schedules()
@@ -1482,6 +1507,7 @@ class TestAnIntegrityErrorFromTheEnqueueIsNotALostRace:
             if getattr(r, "event", None) == "schedule_dispatch_error"
         ], "this worker's failing enqueue was read as the other worker winning"
 
+    @pytest.mark.usefixtures("frozen_now")
     def test_a_genuine_lost_race_stays_silent(self, worker, caplog, monkeypatch):
         import logging
 

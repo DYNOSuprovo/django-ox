@@ -56,6 +56,26 @@ def _tasks(settings):
     settings.TASKS = tasks_setting()
 
 
+@pytest.fixture(autouse=True)
+def frozen_now(monkeypatch):
+    """
+    Pin timezone.now() mid-minute for every test in this file.
+
+    Dispatch derives its tick by flooring the clock to the minute, so a
+    test that reads the clock, writes a row or a tick against it and then
+    asks a worker what is due only holds while every one of those reads
+    lands in the same minute. On the real clock a minute boundary falling
+    inside the body moves the due tick to an instant nothing has recorded,
+    and the schedule fires where the test says it must not. Six workers on
+    one tick are one tick only while all six read the same minute. A test
+    that needs the clock to move patches it again; this only settles where
+    it starts.
+    """
+    fixed = timezone.now().replace(second=30, microsecond=0)
+    monkeypatch.setattr(timezone, "now", lambda: fixed)
+    return fixed
+
+
 def a_minutely(name="minutely"):
     return create_schedule(
         name=name,
