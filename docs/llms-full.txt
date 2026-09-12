@@ -3222,7 +3222,9 @@ from. Called outside a transaction, `seal()` counts with a single
 `COUNT(*)` instead. Timing those two statements alone against a
 million-member batch with fresh statistics, the locking read took 12 s on
 MySQL and 0.55 s on PostgreSQL, and the `COUNT(*)` 0.7 s on MySQL and
-0.03 s on PostgreSQL.
+0.03 s on PostgreSQL. The whole `seal()` call on the same harness and the
+same batch, outside a transaction, took 0.74 s on MySQL and 0.03 s on
+PostgreSQL.
 Reconciling the same batch is 4.9 s on SQLite, 0.4 s on PostgreSQL and
 7.3 s on MySQL, against a reconciler that runs on a one-minute tick.
 
