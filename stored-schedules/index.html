@@ -1,0 +1,1532 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Database-backed worker backend for Django's Tasks framework.">
+      
+      
+      
+        <link rel="canonical" href="https://oxpull.com/django-ox/stored-schedules/">
+      
+      
+        <link rel="prev" href="../recurring-tasks/">
+      
+      
+        <link rel="next" href="../patterns/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Schedules in the database - django-ox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/brand.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  
+  
+    
+  
+  
+  
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="django-ox">
+  <meta property="og:title" content="Schedules in the database - django-ox">
+  <meta property="og:description" content="Database-backed worker backend for Django's Tasks framework.">
+  <meta property="og:url" content="https://oxpull.com/django-ox/stored-schedules/">
+  <meta property="og:image" content="https://oxpull.com/django-ox/assets/social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="django-ox: the production worker for Django Tasks. Your database is the queue.">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Schedules in the database - django-ox">
+  <meta name="twitter:description" content="Database-backed worker backend for Django's Tasks framework.">
+  <meta name="twitter:image" content="https://oxpull.com/django-ox/assets/social-card.png">
+
+  <link rel="apple-touch-icon" href="../assets/favicon.png">
+
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#schedules-in-the-database" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="django-ox" class="md-header__button md-logo" aria-label="django-ox" data-md-component="logo">
+      
+  <img src="../assets/mark-ox.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            django-ox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Schedules in the database
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/oxpull/django-ox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="django-ox" class="md-nav__button md-logo" aria-label="django-ox" data-md-component="logo">
+      
+  <img src="../assets/mark-ox.png" alt="logo">
+
+    </a>
+    django-ox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/oxpull/django-ox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../recurring-tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recurring tasks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#setting-it-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setting it up
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-person-with-admin-access-can-do" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a person with admin access can do
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-a-schedule-fires" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When a schedule fires
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="When a schedule fires">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-new-schedule-waits-for-its-next-tick" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A new schedule waits for its next tick
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#retiming-reschedules-from-the-moment-you-change-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Retiming reschedules from the moment you change it
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pausing-does-not-build-up-a-backlog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pausing does not build up a backlog
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#after-downtime-only-the-most-recent-tick-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        After downtime, only the most recent tick runs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dropping-a-tick-that-is-too-late-to-be-useful" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dropping a tick that is too late to be useful
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#an-edit-takes-effect-immediately-even-mid-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        An edit takes effect immediately, even mid-dispatch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#renaming-is-safe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Renaming is safe
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-schedules-from-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing schedules from code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coming-from-django-celery-beat" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coming from django-celery-beat
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-costs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this costs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#monitoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monitoring
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../patterns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Common patterns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrating
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../choosing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choosing a backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For AI assistants
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#setting-it-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setting it up
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-person-with-admin-access-can-do" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a person with admin access can do
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-a-schedule-fires" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When a schedule fires
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="When a schedule fires">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-new-schedule-waits-for-its-next-tick" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A new schedule waits for its next tick
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#retiming-reschedules-from-the-moment-you-change-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Retiming reschedules from the moment you change it
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pausing-does-not-build-up-a-backlog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pausing does not build up a backlog
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#after-downtime-only-the-most-recent-tick-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        After downtime, only the most recent tick runs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dropping-a-tick-that-is-too-late-to-be-useful" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dropping a tick that is too late to be useful
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#an-edit-takes-effect-immediately-even-mid-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        An edit takes effect immediately, even mid-dispatch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#renaming-is-safe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Renaming is safe
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-schedules-from-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing schedules from code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coming-from-django-celery-beat" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coming from django-celery-beat
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-costs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this costs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#monitoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monitoring
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="schedules-in-the-database">Schedules in the database</h1>
+<p>Settings-declared schedules deploy with your code. That is the default and it
+suits most schedules.</p>
+<p>Sometimes it doesn't. An operator needs to pause a job at 2am. A support team
+adjusts a report's timing without waiting for a release. Someone who cannot
+deploy still has to be able to stop something. For those cases django-ox reads
+schedules from a database table instead, editable in the Django admin.</p>
+<p>The trade is worth being clear about. A settings entry is reviewed and versioned.
+A row is neither. What follows is mostly about keeping that difference from
+becoming a problem.</p>
+<h2 id="setting-it-up">Setting it up</h2>
+<p>Three steps.</p>
+<p><strong>1. Say which tasks may be scheduled.</strong> A row cannot name a task you haven't
+exposed. Put <code>@schedulable</code> above <code>@task</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django_ox.registry</span><span class="w"> </span><span class="kn">import</span> <span class="n">schedulable</span>
+
+
+<span class="nd">@schedulable</span><span class="p">(</span><span class="s2">"reports.daily"</span><span class="p">)</span>
+<span class="nd">@task</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">daily_report</span><span class="p">():</span> <span class="o">...</span>
+</code></pre></div>
+<p><code>@schedulable</code> only takes effect when the module it sits in is imported.
+django-ox imports each installed app's <code>tasks</code> module and nothing else, so a
+decorator in <code>myapp/jobs.py</code> registers nothing until something else imports
+that module. Put it in <code>myapp/tasks.py</code>.</p>
+<p>Or declare them in settings, which is the only channel <code>manage.py check</code> can
+validate:</p>
+<div class="highlight"><pre><span></span><code><span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+    <span class="s2">"SCHEDULABLE_TASKS"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"reports.daily"</span><span class="p">:</span> <span class="s2">"reports.tasks.daily_report"</span><span class="p">},</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>2. Point the backend at the database source:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">"SCHEDULE_SOURCE"</span><span class="p">:</span> <span class="s2">"django_ox.stored.DatabaseScheduleSource"</span><span class="p">,</span>
+        <span class="p">},</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>3. Run <code>manage.py migrate django_ox</code>.</strong></p>
+<p>Schedules now appear in the admin under django-ox. Nothing else changes: the
+worker is the same process, there is still no scheduler to deploy, and
+<code>SCHEDULES</code> entries keep working if you use both.</p>
+<p>All three steps matter. The admin
+section appears once the migration has run, whether or not a backend sets
+<code>SCHEDULE_SOURCE</code>. Without that option a row saves and then never dispatches:
+no error, no log line, and nothing from <code>manage.py check</code>. "Run selected
+schedules once now" still enqueues the task, so it is not evidence that the
+schedule is wired up. If schedules created in the admin never fire on their
+own, check that a backend's <code>OPTIONS</code> sets <code>SCHEDULE_SOURCE</code> to
+<code>django_ox.stored.DatabaseScheduleSource</code>.</p>
+<h2 id="what-a-person-with-admin-access-can-do">What a person with admin access can do</h2>
+<p>They can pick a task from the list you exposed, set its timing and arguments,
+enable it, disable it, and run it once immediately.</p>
+<p>Running one immediately ignores both the pause and the end time: a schedule
+that is disabled or past its <code>end_time</code> still runs.</p>
+<p>They cannot name a task you haven't exposed. The field is a list, not a text box,
+and a hand-written POST is refused too.</p>
+<p>That is the unusual part. The two packages closest to this one both let a row
+name anything, and what that buys differs between them.</p>
+<p>In <code>django-q2</code> a <code>Schedule</code> row's <code>func</code> column is a plain text field, and the
+worker resolves whatever it holds with <code>pydoc.locate</code> and calls the result
+<sup id="fnref:q2-func"><a class="footnote-ref" href="#fn:q2-func">1</a></sup>. Change permission on that table is close to permission to run any
+importable callable.</p>
+<p><code>django-celery-beat</code> is not the same. A <code>PeriodicTask</code> row's <code>task</code> column is
+free text too <sup id="fnref:beat-task"><a class="footnote-ref" href="#fn:beat-task">2</a></sup>, but a Celery worker never imports what it finds
+there. It looks the name up in the registry of tasks it has already loaded, and
+a name that isn't in the registry is rejected as <code>NotRegistered</code>
+<sup id="fnref:celery-names"><a class="footnote-ref" href="#fn:celery-names">3</a></sup>. So change permission on that table is permission to run any
+task the application registered, with the arguments and the cadence of your
+choosing. That is a lot. It is not arbitrary code.</p>
+<p>Here a row names a registry key the code exposed, never an import path. The
+code decides what is reachable and the row picks from it.</p>
+<p>You can narrow it further. A registry entry may require a permission of its own:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@schedulable</span><span class="p">(</span><span class="s2">"payroll.run"</span><span class="p">,</span> <span class="n">permission</span><span class="o">=</span><span class="s2">"payroll.run_payroll"</span><span class="p">)</span>
+<span class="nd">@task</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">run_payroll</span><span class="p">():</span> <span class="o">...</span>
+</code></pre></div>
+<p>Anyone without <code>payroll.run_payroll</code> can see that schedule and cannot change it,
+whatever their permissions on the schedule table.</p>
+<p>Arguments get validated if you say how:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django</span><span class="w"> </span><span class="kn">import</span> <span class="n">forms</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django_ox.registry</span><span class="w"> </span><span class="kn">import</span> <span class="n">ArgsForm</span><span class="p">,</span> <span class="n">schedulable</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">DailyArgs</span><span class="p">(</span><span class="n">ArgsForm</span><span class="p">):</span>
+    <span class="n">region</span> <span class="o">=</span> <span class="n">forms</span><span class="o">.</span><span class="n">CharField</span><span class="p">()</span>
+
+
+<span class="nd">@schedulable</span><span class="p">(</span><span class="s2">"reports.daily"</span><span class="p">,</span> <span class="n">form</span><span class="o">=</span><span class="n">DailyArgs</span><span class="p">)</span>
+<span class="nd">@task</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">daily_report</span><span class="p">(</span><span class="n">region</span><span class="p">):</span> <span class="o">...</span>
+</code></pre></div>
+<p>An unknown argument is rejected rather than ignored, and a number in a text field
+is rejected rather than quietly turned into a string.</p>
+<h2 id="when-a-schedule-fires">When a schedule fires</h2>
+<p>This is the part worth reading properly. A stored schedule can be changed while
+workers are running, and what should happen isn't always obvious.</p>
+<p>Every rule below follows from one idea: <strong>a tick fires only if it falls at or
+after the schedule's <code>start_time</code>.</strong></p>
+<p>That field is the activation boundary. It is set when the row is created. A few
+events move it forward, and each of those is a rule below.</p>
+<p><code>end_time</code> is the other bound: no tick after it fires, and it is how a schedule
+is stopped on a date rather than by hand. Both can be passed to
+<code>create_schedule</code>; <code>start_time</code> defaults to the moment of creation and
+<code>end_time</code> to none, meaning the schedule runs until it is disabled or deleted.</p>
+<h3 id="a-new-schedule-waits-for-its-next-tick">A new schedule waits for its next tick</h3>
+<p>Create a daily 02:00 schedule at 15:00 and it first runs at 02:00 tomorrow. It
+does not run immediately, because 02:00 today passed before the schedule
+existed.</p>
+<p>Create a minutely schedule at 14:37:41 and it first runs at 14:38:00, not
+14:37:00, for the same reason.</p>
+<p>The boundary is written when the row is created, not when a worker first notices
+it. So a schedule created at 12:00 and first due at 12:05 still runs, even if
+every worker was down until 12:06.</p>
+<h3 id="retiming-reschedules-from-the-moment-you-change-it">Retiming reschedules from the moment you change it</h3>
+<p>Change a schedule from <code>0 2 * * *</code> to <code>0 3 * * *</code> at 15:00. It next runs at 03:00
+tomorrow. It does <strong>not</strong> run at 03:00 today, even though that time has passed
+and the new expression matches it: at 03:00 today, nobody could have expected a
+run.</p>
+<p>The same rule covers stranger cases. Retimed from 02:00 to 16:00 at 15:00, it
+runs at 16:00 today, an hour later, because that tick is still ahead of the
+change.</p>
+<p>Changing what a schedule <em>runs</em> does not change <em>when</em> it runs. Editing its
+arguments leaves the boundary alone. This matters: if every edit re-anchored
+the schedule, one edited more often than its own period would never run at
+all.</p>
+<p>A task already enqueued keeps the arguments it was enqueued with. Edits apply to
+the next tick.</p>
+<h3 id="pausing-does-not-build-up-a-backlog">Pausing does not build up a backlog</h3>
+<p>Disable a schedule and it stops. Enable it again and it resumes from now.
+Anything that came due while it was disabled does not run.</p>
+<p>That is deliberate, and it differs from some systems you may know. Kubernetes
+documents that when a CronJob with no starting deadline is unsuspended, "the
+missed Jobs are scheduled immediately" <sup id="fnref:k8s-suspend"><a class="footnote-ref" href="#fn:k8s-suspend">4</a></sup>. Quartz applies a
+trigger's misfire instruction when the trigger is resumed <sup id="fnref:quartz-resume"><a class="footnote-ref" href="#fn:quartz-resume">5</a></sup>,
+and for a cron trigger the default instruction is to fire once, now
+<sup id="fnref:quartz-cron"><a class="footnote-ref" href="#fn:quartz-cron">6</a></sup>. Temporal is closer to django-ox: while a schedule is paused its
+spec "has no effect", and the runs a pause missed are something you ask for
+with a backfill <sup id="fnref:temporal-pause"><a class="footnote-ref" href="#fn:temporal-pause">7</a></sup>.</p>
+<p>The point of pausing is that things stop. A resume that fires everything you
+paused through fails at the same moment, one step later.</p>
+<p>If you did want those runs, enqueue them yourself. Backfilling is a decision,
+not a side effect of resuming.</p>
+<h3 id="after-downtime-only-the-most-recent-tick-runs">After downtime, only the most recent tick runs</h3>
+<p>If every worker was down across several ticks, the latest one runs on recovery
+and the older ones are skipped. A nightly job still runs after an unlucky deploy.
+A weekend of downtime on a five-minute schedule does not replay hundreds of
+runs.</p>
+<p>Tasks should be safe to run late for the same reason they should be safe to run
+twice.</p>
+<h3 id="dropping-a-tick-that-is-too-late-to-be-useful">Dropping a tick that is too late to be useful</h3>
+<p>Some jobs are worse than useless when they are hours late. A 09:00 standup
+reminder at 14:00 is noise.</p>
+<p>Set a starting deadline in seconds and a tick later than that is dropped instead
+of run:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django_ox.stored</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_schedule</span>
+
+<span class="n">create_schedule</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="s2">"standup-reminder"</span><span class="p">,</span>
+    <span class="n">task_key</span><span class="o">=</span><span class="s2">"reminders.standup"</span><span class="p">,</span>
+    <span class="n">trigger</span><span class="o">=</span><span class="s2">"cron"</span><span class="p">,</span>
+    <span class="n">cron</span><span class="o">=</span><span class="s2">"0 9 * * 1-5"</span><span class="p">,</span>
+    <span class="n">starting_deadline_seconds</span><span class="o">=</span><span class="mi">1800</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+<p>The default is no deadline, which is what settings-declared schedules have always
+done: run however late.</p>
+<p>The deadline is judged when the tick is admitted, under the row's lock. A tick
+inside its deadline when the pass began and past it by the time the lock was
+granted, because another worker or an admin save held the row, is dropped rather
+than run late.</p>
+<p>A dropped tick logs <code>schedule_tick_dropped</code> with how late it was, so a drop is
+a signal rather than an absence. Each worker reports a given tick once, not once
+per dispatch pass.</p>
+<h3 id="an-edit-takes-effect-immediately-even-mid-dispatch">An edit takes effect immediately, even mid-dispatch</h3>
+<p>Change a schedule one second before a worker was going to fire it and the worker
+uses the change. Disable it and it does not fire. Retime it and the tick it was
+about to record is no longer one this schedule wants, so it is not recorded.
+Change its arguments and the task that runs gets the new ones.</p>
+<p>A worker reads the schedules every second or so, but it does not decide from
+what it read. Inside the transaction that would record the tick, it locks the
+row, reads it, and works out from that row whether this exact tick is still due.
+So the answer comes from the schedule as it stands, not from a copy of it, and
+that holds for a change made any way at all, including a bulk update that runs
+no application code.</p>
+<p>Already-enqueued tasks are not cancelled. An edit applies to the next tick.</p>
+<p>One limit worth knowing. A schedule carries a record of the timing and the
+pause state its boundary was set for, so a retime or a pause done with
+<code>queryset.update()</code> or a fixture is noticed at the next read: the tick from the
+old definition does not fire, and the boundary moves to the moment the change
+was found, which is not the moment it was made. However many workers find the
+change together, only the first of them moves the boundary. Two things that
+record cannot see. A change made and reverted between two reads, a pause and a
+resume inside one <code>SCHEDULE_RECONCILE_INTERVAL</code> with no read between them,
+leaves the row as it was, so nothing notices and one tick from inside the pause
+can fire on the resume. And a tick between a raw edit and the read that finds it
+is judged by the old definition until then. <code>update_schedule</code>, and the admin
+that calls it, move the boundary at the moment of the change and have neither
+gap.</p>
+<h3 id="renaming-is-safe">Renaming is safe</h3>
+<p>A schedule's name is a label. What its ticks are recorded against is the row
+itself, so renaming one keeps its history, and a tick is not enqueued twice
+while workers hold different views of the name. Execution stays at-least-once,
+as it is for every task.</p>
+<p>One consequence: a settings-declared schedule may not be named with a <code>db:</code>
+prefix, which is reserved for exactly this. <code>manage.py check</code> refuses it.</p>
+<h2 id="writing-schedules-from-code">Writing schedules from code</h2>
+<p>The admin is one way in. <code>django_ox.stored</code> is the other, and it is what the
+admin itself calls:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django_ox.stored</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_schedule</span><span class="p">,</span> <span class="n">update_schedule</span>
+
+<span class="n">schedule</span> <span class="o">=</span> <span class="n">create_schedule</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="s2">"nightly-report"</span><span class="p">,</span>
+    <span class="n">task_key</span><span class="o">=</span><span class="s2">"reports.daily"</span><span class="p">,</span>
+    <span class="n">trigger</span><span class="o">=</span><span class="s2">"cron"</span><span class="p">,</span>
+    <span class="n">cron</span><span class="o">=</span><span class="s2">"0 2 * * *"</span><span class="p">,</span>
+    <span class="n">arguments</span><span class="o">=</span><span class="p">{</span><span class="s2">"region"</span><span class="p">:</span> <span class="s2">"emea"</span><span class="p">},</span>
+<span class="p">)</span>
+
+<span class="n">update_schedule</span><span class="p">(</span><span class="n">schedule</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="s2">"0 3 * * *"</span><span class="p">)</span>
+</code></pre></div>
+<p>Use these rather than <code>OxSchedule.objects.create()</code>. Django's <code>save()</code> does not
+run model validation, so a direct write skips the checks, leaves the activation
+boundary set for the old timing, and doesn't tell workers the row moved.</p>
+<p>A row written that way is validated when a worker reads it. One that does not
+validate is skipped and logged as <code>schedule_row_skipped</code>. One that does validate
+runs, but its activation boundary is moved to the moment a worker noticed the
+row and logged as <code>schedule_boundary_healed</code>, so any <code>start_time</code> the writer
+chose is discarded.</p>
+<p><code>update_schedule</code> and <code>create_schedule</code> take an optional <code>user=</code>, and enforce any
+per-entry permission when you pass one.</p>
+<h2 id="coming-from-django-celery-beat">Coming from django-celery-beat</h2>
+<p>The shape is familiar. The differences that will surprise you:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>django-celery-beat</th>
+<th>django-ox</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>What a row names</td>
+<td>any registered task, free text</td>
+<td>a key you exposed in code</td>
+</tr>
+<tr>
+<td>Intervals</td>
+<td>measured from the last run</td>
+<td>counted from a fixed instant</td>
+</tr>
+<tr>
+<td>Pause and resume</td>
+<td>depends how you paused; one path fires on resume</td>
+<td>fires nothing from inside the pause; a bulk pause and resume with no read between them can fire one tick</td>
+</tr>
+<tr>
+<td>Retiming</td>
+<td>evaluated against the old <code>last_run_at</code></td>
+<td>reschedules from the moment of the change</td>
+</tr>
+<tr>
+<td>Scheduler</td>
+<td>one beat process, and only one</td>
+<td>every worker, coordinated by a unique constraint</td>
+</tr>
+<tr>
+<td>Bulk <code>update()</code></td>
+<td>needs <code>PeriodicTasks.update_changed()</code> by hand</td>
+<td>noticed at the next read, from the row itself; not a change made and reverted between two reads</td>
+</tr>
+</tbody>
+</table>
+<p><code>manage.py ox_import_beat_schedules</code> reads your existing table and prints the
+registry entries and <code>create_schedule</code> calls it would take. It writes nothing:
+retiming production is a decision, so you read the output, edit it and apply it
+yourself.</p>
+<p>The interval difference is the one to watch. <code>every=timedelta(minutes=90)</code> fires
+at 00:00, 01:30, 03:00 and so on, whatever time you created it. Celery would
+measure ninety minutes from the last run. Use <code>phase</code> to shift the sequence if
+the alignment matters.</p>
+<h2 id="what-this-costs">What this costs</h2>
+<p>Worth knowing before you turn it on:</p>
+<ul>
+<li><strong>A row is unreviewed input.</strong> Someone with admin access can retime a
+  production job without anyone seeing a diff. The registry limits <em>what</em> they
+  can run, not <em>when</em>.</li>
+<li><strong>An edit stops the old tick immediately</strong>; the new timing is used from the
+  next dispatch pass, about a second later.</li>
+<li><strong>A change made without <code>django_ox.stored</code></strong>, a bulk update, a fixture or a
+  data migration, is found within a minute rather than a second. Nothing about
+  such a write tells a worker to look. Set
+  <code>OPTIONS["SCHEDULE_RECONCILE_INTERVAL"]</code> if you want that sooner; it is one
+  indexed read of a small table.</li>
+<li><strong>One extra query per pass.</strong> Workers read a single row to learn whether
+  anything changed, and re-read the schedules only when it did.</li>
+<li><strong>A broken row is skipped, not fatal.</strong> One that no longer validates is logged
+  and ignored so the others keep running. Watch for <code>schedule_row_skipped</code>.</li>
+<li><strong><code>manage.py check</code> cannot see rows.</strong> Checks run before <code>migrate</code>, so a bad
+  schedule in the database is a log line, not a start-up error. Settings-declared
+  schedules still fail fast. A missing <code>SCHEDULE_SOURCE</code> is not a check error
+  either: leaving it out is the default, and a check cannot read the rows that
+  would make it a mistake.</li>
+<li><strong><code>task_enqueued</code> receivers run inside the dispatch transaction</strong>, while the
+  worker holds the schedule row's lock. A receiver that takes row locks of its
+  own can deadlock against an application transaction that holds those rows and
+  then writes the schedule, through <code>update_schedule</code> or the admin; the database
+  ends one of the two, and the tick is retried on the next pass. Keep receivers
+  to work that locks nothing a schedule-writing transaction may hold, and put
+  anything else in <code>transaction.on_commit</code>. A callback registered that way that
+  raises, whatever it raises, is logged as <code>schedule_dispatch_callback_failed</code>;
+  the task it followed is enqueued and counted.</li>
+</ul>
+<h2 id="monitoring">Monitoring</h2>
+<p>The events worth alerting on. The full set, with every field, is on the
+<a href="../monitoring/">monitoring</a> page:</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>schedule_dispatched</code></td>
+<td>A tick enqueued its task.</td>
+</tr>
+<tr>
+<td><code>schedule_tick_dropped</code></td>
+<td>A tick was past its starting deadline. Carries <code>late_seconds</code>.</td>
+</tr>
+<tr>
+<td><code>schedule_row_skipped</code></td>
+<td>A row could not be used. Carries <code>reason</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><code>schedule_row_skipped</code> is the one to alert on. It usually means a task key was
+removed from the code while a row still names it.</p>
+<div class="footnote">
+<hr />
+<ol>
+<li id="fn:q2-func">
+<p>django-q2 1.11.1. <code>django_q/models.py</code>: <code>Schedule.func</code> is <code>models.CharField(max_length=256)</code> with no <code>choices</code> and no validators. <code>django_q/scheduler.py</code> passes the stored value to <code>async_task(s.func, ...)</code>, and <code>django_q/worker.py</code> runs <code>f = pydoc.locate(f)</code> and then <code>res = f(*task["args"], **task["kwargs"])</code>. The documentation describes the field as "the function to schedule. Dotted strings only." <a href="https://django-q2.readthedocs.io/en/master/schedules.html">https://django-q2.readthedocs.io/en/master/schedules.html</a>, checked 2026-09-12.&#160;<a class="footnote-backref" href="#fnref:q2-func" title="Jump back to footnote 1 in the text">&#8617;</a></p>
+</li>
+<li id="fn:beat-task">
+<p>django-celery-beat 2.9.0. <code>django_celery_beat/models.py</code>: <code>PeriodicTask.task</code> is <code>models.CharField(max_length=200)</code> with no <code>choices</code> and no validators, and the model defines no <code>clean()</code>. The documentation says periodic tasks "can be managed from the Django Admin interface". <a href="https://django-celery-beat.readthedocs.io/en/latest/">https://django-celery-beat.readthedocs.io/en/latest/</a>, checked 2026-09-12.&#160;<a class="footnote-backref" href="#fnref:beat-task" title="Jump back to footnote 2 in the text">&#8617;</a></p>
+</li>
+<li id="fn:celery-names">
+<p>Celery 5.6.3, "Tasks", under "Names": "When tasks are sent, no actual function code is sent with it, just the name of the task to execute. When the worker then receives the message it can look up the name in its task registry to find the execution code." <a href="https://docs.celeryq.dev/en/stable/userguide/tasks.html">https://docs.celeryq.dev/en/stable/userguide/tasks.html</a>. In the code, <code>celery/app/registry.py</code> is a <code>dict</code> whose <code>__missing__</code> raises <code>NotRegistered</code>, and <code>celery/worker/consumer/consumer.py</code> builds its strategies from <code>app.tasks</code> alone, sending a miss to <code>on_unknown_task</code>, which rejects the message and marks it failed with <code>NotRegistered</code>. The periodic-task page adds that the stored name "is not the import path of the task, even though the default naming pattern is built like it is" <a href="https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html">https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html</a>. Both pages checked 2026-09-12.&#160;<a class="footnote-backref" href="#fnref:celery-names" title="Jump back to footnote 3 in the text">&#8617;</a></p>
+</li>
+<li id="fn:k8s-suspend">
+<p>Kubernetes, "CronJob", under "Schedule suspension": "When <code>.spec.suspend</code> changes from <code>true</code> to <code>false</code> on an existing CronJob without a starting deadline, the missed Jobs are scheduled immediately." <a href="https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#schedule-suspension">https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#schedule-suspension</a>, checked 2026-09-12.&#160;<a class="footnote-backref" href="#fnref:k8s-suspend" title="Jump back to footnote 4 in the text">&#8617;</a></p>
+</li>
+<li id="fn:quartz-resume">
+<p>Quartz 2.3.0 API, <code>Scheduler.resumeTrigger</code>: "If the <code>Trigger</code> missed one or more fire-times, then the <code>Trigger</code>'s misfire instruction will be applied." The same sentence is on <code>resumeJob</code>, <code>resumeTriggers</code> and <code>resumeAll</code>. <a href="https://www.quartz-scheduler.org/api/2.3.0/org/quartz/Scheduler.html">https://www.quartz-scheduler.org/api/2.3.0/org/quartz/Scheduler.html</a>, checked 2026-09-12.&#160;<a class="footnote-backref" href="#fnref:quartz-resume" title="Jump back to footnote 5 in the text">&#8617;</a></p>
+</li>
+<li id="fn:quartz-cron">
+<p>Quartz 2.3.0 tutorial, lesson 6, "CronTrigger Misfire Instructions": the smart policy "is also the default for all trigger types" and "is interpreted by CronTrigger as MISFIRE_INSTRUCTION_FIRE_NOW". The <code>CronTrigger</code> API names that constant <code>MISFIRE_INSTRUCTION_FIRE_ONCE_NOW</code>: "upon a mis-fire situation, the CronTrigger wants to be fired now by Scheduler." <a href="https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/tutorial-lesson-06.html">https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/tutorial-lesson-06.html</a>, checked 2026-09-12.&#160;<a class="footnote-backref" href="#fnref:quartz-cron" title="Jump back to footnote 6 in the text">&#8617;</a></p>
+</li>
+<li id="fn:temporal-pause">
+<p>Temporal, "Schedules": "When a Schedule is Paused, the Spec has no effect", and under "Backfill": "You might use this to fill in runs from a time period when the Schedule was paused due to an external condition that's now resolved". <a href="https://docs.temporal.io/schedule">https://docs.temporal.io/schedule</a>, checked 2026-09-12.&#160;<a class="footnote-backref" href="#fnref:temporal-pause" title="Jump back to footnote 7 in the text">&#8617;</a></p>
+</li>
+</ol>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../recurring-tasks/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Recurring tasks">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Recurring tasks
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../patterns/" class="md-footer__link md-footer__link--next" aria-label="Next: Common patterns">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Common patterns
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "navigation.footer"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

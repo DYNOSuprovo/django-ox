@@ -511,6 +511,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../stored-schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../patterns/" class="md-nav__link">
         
   
@@ -1037,6 +1064,21 @@ retry. Add options when you have a reason to.</p>
 <td><code>{}</code></td>
 <td>Recurring task definitions. Documented on the <a href="../recurring-tasks/">Recurring tasks</a> page.</td>
 </tr>
+<tr>
+<td><code>SCHEDULE_SOURCE</code></td>
+<td>settings</td>
+<td>Dotted path to the class a worker asks for its active schedules. Set it to <code>django_ox.stored.DatabaseScheduleSource</code> to read them from the database. See <a href="../stored-schedules/">Schedules in the database</a>.</td>
+</tr>
+<tr>
+<td><code>SCHEDULE_RECONCILE_INTERVAL</code></td>
+<td><code>60.0</code></td>
+<td>Seconds between full reads of the stored schedules, whether or not anything is known to have changed. The backstop for a row written without <code>django_ox.stored</code>.</td>
+</tr>
+<tr>
+<td><code>SCHEDULABLE_TASKS</code></td>
+<td><code>{}</code></td>
+<td>Tasks a stored schedule may name, as <code>{key: dotted path}</code> or <code>{key: {"task": ..., "form": ..., "permission": ...}}</code>. The alternative to the <code>@schedulable</code> decorator.</td>
+</tr>
 </tbody>
 </table>
 <p>The retry delay after attempt <em>n</em> fails is
@@ -1099,9 +1141,11 @@ the command works from any working directory.</p>
 <li>The reaper runs every <code>min(30, max(lock_timeout / 2, 1))</code> seconds.</li>
 <li>Lease renewal runs every <code>max(lock_timeout / 3, 0.1)</code> seconds, on its own
   thread, and keeps running until the last in-flight task has drained.</li>
-<li>Schedule dispatch (when <code>SCHEDULES</code> is configured) runs every
-  <code>max(1, min(interval, 30))</code> seconds, about once a second at the default
-  polling interval.</li>
+<li>Schedule dispatch runs every <code>max(1, min(interval, 30))</code> seconds, about once
+  a second at the default polling interval. It runs whether or not any schedule
+  is configured, because a source that reads the database can gain one at any
+  time; a pass with no schedules configured at all returns on a list check,
+  before any query.</li>
 </ul>
 <h3 id="routing-a-queue-to-its-own-worker">Routing a queue to its own worker</h3>
 <p>Declare every queue on the backend, then give each worker a subset. Slow work
@@ -1244,6 +1288,28 @@ alert are on the
   queue name. Every bad value is reported in one run.</li>
 <li><code>django_ox.E005</code>: a <code>TASK_TIMEOUTS</code> key names a queue that is not in
   <code>QUEUES</code>, so the entry would never apply.</li>
+<li><code>django_ox.E006</code>: <code>SCHEDULE_SOURCE</code> does not name a class that can be
+  built and answers <code>schedules()</code>. Without this a worker would start,
+  dispatch nothing and report nothing.</li>
+<li><code>django_ox.E007</code>: a <code>SCHEDULABLE_TASKS</code> entry is invalid (task or form
+  path does not import, the form is not an <code>ArgsForm</code>, unknown keys, or a
+  key already registered for a different task).</li>
+<li><code>django_ox.E009</code> / <code>django_ox.W002</code>: two configured schedule names differ
+  only by case. The tick log decides identity with its column's collation, so
+  on a case-insensitive one, MySQL's default among them, the two share a key:
+  their ticks collide and one schedule stops running. Refused on MySQL,
+  reported as a warning elsewhere, because the same settings deployed against
+  MySQL would starve one of the two.</li>
+<li><code>django_ox.W001</code>: <code>USE_TZ</code> is off and <code>TIME_ZONE</code> puts the clock back once
+  a year. Tick times are stored against the wall clock, so the repeated hour
+  has one label for two instants: an interval schedule loses about half its
+  runs for the length of it, and a cron schedule inside it fires once rather
+  than twice. Set <code>USE_TZ = True</code>, or a zone with no transition.</li>
+<li><code>django_ox.E008</code>: a database router sends the django-ox models to more
+  than one database. A task row and its schedule tick row are written in one
+  transaction, which is what makes a due tick enqueue once, so they have to
+  live on the same database. Route the <code>django_ox</code> app to a single one; it
+  need not be the default.</li>
 <li><code>django_ox.E010</code>: <code>LOCK_TIMEOUT</code>, <code>BACKOFF_INITIAL</code> or <code>BACKOFF_MAX</code> is not a
   positive, finite number of seconds. The worker reads all three, so the check stops a bad value at deploy time.</li>
 </ul>

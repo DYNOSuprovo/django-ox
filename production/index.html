@@ -359,6 +359,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../stored-schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../patterns/" class="md-nav__link">
         
   
@@ -1187,7 +1214,10 @@ a task thread that its timeout could not stop; see
 <code>Restart=on-failure</code> restarts it either way.</p>
 <p>This maps directly onto rolling deploys: send SIGTERM, wait, start the new
 version. The only tuning point is the process manager's kill escalation
-(<code>TimeoutStopSec</code> above) relative to your longest task.</p>
+(<code>TimeoutStopSec</code> above) relative to your longest task. One caveat for the
+upgrade from 1.1.0, in the changelog under this release's migration note: a
+settings schedule first seen while both versions are running can be anchored
+twice, and its second tick does not fire.</p>
 <p>With <code>--processes</code> above 1, the signal goes to the supervisor, and SIGHUP
 counts as well as SIGTERM and SIGINT. The sequence is:</p>
 <ol>
@@ -1230,7 +1260,7 @@ concurrent workers safe:</p>
   the head of the queue; <a href="#postgresql-mysql-or-sqlite">PostgreSQL, MySQL or SQLite</a>
   says where to spend concurrency there.</li>
 <li><strong>Recurring schedules need no dedicated node.</strong> Every worker dispatches;
-  a unique constraint guarantees each tick fires once. See
+  a unique constraint stops two workers enqueueing the same tick. See
   <a href="../recurring-tasks/#many-workers-one-tick">Recurring tasks</a>.</li>
 </ul>
 <p>Workers can also be split by queue: run

@@ -490,6 +490,33 @@
   
   
     <li class="md-nav__item">
+      <a href="stored-schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="patterns/" class="md-nav__link">
         
   
@@ -949,8 +976,9 @@ coming back. The mechanics, and the one case to know about, are in
   away from live slow ones.</li>
 <li>Graceful drain on SIGTERM: in-flight tasks finish before the worker exits.</li>
 <li>Priorities (-100 to 100) and deferred tasks (<code>run_after</code>).</li>
-<li><a href="recurring-tasks/">Recurring tasks</a>: cron schedules declared in
-  settings, no separate scheduler process.</li>
+<li><a href="recurring-tasks/">Recurring tasks</a>: cron or fixed-interval schedules
+  declared in settings, or <a href="stored-schedules/">rows edited in the Django admin</a>;
+  every worker dispatches, so there is no separate scheduler process.</li>
 <li>A result store: status, return value and errors readable through the
   standard <code>django.tasks</code> result API.</li>
 <li>A <a href="configuration/#ox_prune">prune command</a> to keep the table small.</li>
@@ -1015,7 +1043,9 @@ the producer side.</p>
 <ul>
 <li><a href="configuration/">Configuration</a> for every setting, option and command
   flag.</li>
-<li><a href="recurring-tasks/">Recurring tasks</a> for cron schedules.</li>
+<li><a href="recurring-tasks/">Recurring tasks</a> for cron and interval schedules, and
+  <a href="stored-schedules/">Schedules in the database</a> for rows edited in the
+  admin.</li>
 <li><a href="production/">Production</a> for systemd units, scaling and shutdown
   semantics.</li>
 </ul>

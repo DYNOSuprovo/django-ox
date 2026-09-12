@@ -52,4 +52,8 @@
          <loc>https://oxpull.com/django-ox/stability/</loc>
          <lastmod>2026-09-12</lastmod>
     </url>
+    <url>
+         <loc>https://oxpull.com/django-ox/stored-schedules/</loc>
+         <lastmod>2026-09-12</lastmod>
+    </url>
 </urlset>

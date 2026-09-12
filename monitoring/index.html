@@ -359,6 +359,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../stored-schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../patterns/" class="md-nav__link">
         
   
@@ -1329,6 +1356,51 @@ The message text is not part of the contract. The keys are.</p>
 <td>A recurring tick enqueued its task.</td>
 </tr>
 <tr>
+<td><code>schedule_tick_dropped</code></td>
+<td>WARNING</td>
+<td>A tick was past its starting deadline and was not run. Carries <code>late_seconds</code>. Each worker reports a given tick once, not once per dispatch pass, so a schedule that stays droppable does not repeat the warning every second.</td>
+</tr>
+<tr>
+<td><code>schedule_row_skipped</code></td>
+<td>WARNING</td>
+<td>A stored schedule could not be used: its task key is not registered, its arguments no longer validate, or its timing does not parse. The others in the same pass still run. Carries <code>reason</code>.</td>
+</tr>
+<tr>
+<td><code>schedule_dispatch_error</code></td>
+<td>ERROR</td>
+<td>One schedule raised something unexpected: its task would not enqueue, its row raised. The rest of the pass continues. Not a database error; those end the pass as <code>schedule_dispatch_failed</code>.</td>
+</tr>
+<tr>
+<td><code>schedule_dispatch_callback_failed</code></td>
+<td>WARNING</td>
+<td>A <code>transaction.on_commit</code> callback registered by a <code>task_enqueued</code> receiver raised after the dispatch transaction committed. The task is enqueued, the tick is recorded and the dispatch is counted; the failure is the callback's. Carries <code>task_id</code>.</td>
+</tr>
+<tr>
+<td><code>schedule_dispatch_failed</code></td>
+<td>WARNING</td>
+<td>The dispatch pass hit a database error, wherever in the pass it was raised; the stored source's marker read and boundary heal are the exceptions, with events of their own below. The pass is abandoned and retried on the next one; a connection that is no longer usable is dropped, and the claim still runs.</td>
+</tr>
+<tr>
+<td><code>schedule_source_unavailable</code></td>
+<td>WARNING</td>
+<td>The stored schedules could not be read, so the worker is running on the set it last read rather than on none. Repeated every dispatch pass while the read keeps failing. A stream of it right after a deploy means the code is running ahead of migration <code>0007</code>.</td>
+</tr>
+<tr>
+<td><code>schedule_lock_unavailable</code></td>
+<td>WARNING</td>
+<td>The database gave up waiting for a lock another worker held: a stored schedule's row, or the tick row a settings-declared schedule's dispatch claims. MySQL's lock-wait timeout or a deadlock it resolved against this worker, SQLite's busy timeout, PostgreSQL's <code>lock_timeout</code>. The schedule is skipped this pass and its tick fires on a later one if still unclaimed. No traceback; a stream of it means one worker's dispatch transactions are long, which is usually a slow <code>task_enqueued</code> receiver.</td>
+</tr>
+<tr>
+<td><code>schedule_boundary_healed</code></td>
+<td>INFO</td>
+<td>A stored schedule's timing had changed without its activation boundary moving, so the boundary was moved onto the current timing. Expected after a bulk update; repeated for one schedule is not.</td>
+</tr>
+<tr>
+<td><code>schedule_boundary_heal_failed</code></td>
+<td>WARNING</td>
+<td>That move failed and will be retried.</td>
+</tr>
+<tr>
 <td><code>worker_error</code></td>
 <td>ERROR</td>
 <td>The execution wrapper itself raised (an internal worker error, not a task failure).</td>
@@ -1501,8 +1573,23 @@ The message text is not part of the contract. The keys are.</p>
 </tr>
 <tr>
 <td><code>schedule</code></td>
-<td><code>schedule_dispatched</code></td>
-<td>Schedule name from <code>SCHEDULES</code>.</td>
+<td><code>schedule_dispatched</code>, <code>schedule_row_skipped</code>, <code>schedule_dispatch_error</code>, <code>schedule_dispatch_callback_failed</code>, <code>schedule_tick_dropped</code>, <code>schedule_lock_unavailable</code> for a settings-declared schedule</td>
+<td>The schedule's name, from <code>SCHEDULES</code> or from its row.</td>
+</tr>
+<tr>
+<td><code>schedule_pk</code></td>
+<td><code>schedule_row_skipped</code>, <code>schedule_lock_unavailable</code> for a stored schedule, <code>schedule_boundary_healed</code></td>
+<td>The stored schedule's row id. Absent for a settings-declared schedule, which has no row.</td>
+</tr>
+<tr>
+<td><code>scheduled_for</code>, <code>late_seconds</code></td>
+<td><code>schedule_tick_dropped</code></td>
+<td>The tick that was dropped, and how late it was when the deadline rejected it.</td>
+</tr>
+<tr>
+<td><code>reason</code></td>
+<td><code>schedule_row_skipped</code></td>
+<td>Why the row could not be used.</td>
 </tr>
 <tr>
 <td><code>queues</code>, <code>concurrency</code></td>

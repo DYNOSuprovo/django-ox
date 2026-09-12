@@ -359,6 +359,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../stored-schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../patterns/" class="md-nav__link">
         
   
@@ -927,8 +954,20 @@ supervisor:</p>
   after one second, doubling to 30 s, and more than five deaths of one slot
   in a minute stops the supervisor with exit 1. CPU-bound work wants
   <code>--processes N --concurrency 1</code>.</li>
-<li>Recurring tasks go in <code>OPTIONS["SCHEDULES"]</code>. Every worker dispatches them;
-  there is no scheduler process to start.</li>
+<li>Recurring tasks go in <code>OPTIONS["SCHEDULES"]</code>, with either <code>cron</code> or <code>every</code>,
+  not both. Every worker dispatches them; there is no scheduler process to
+  start. A tick that passes while every worker is down is enqueued once on
+  recovery, and older missed ticks are skipped.</li>
+<li>Schedules can live in the database instead, editable in the admin. Set
+  <code>OPTIONS["SCHEDULE_SOURCE"]</code> to <code>"django_ox.stored.DatabaseScheduleSource"</code>.
+  A row names a key registered with <code>@schedulable</code>, never an import path, so
+  admin access does not become permission to run arbitrary code. The decorator
+  takes effect only when its module is imported, and django-ox imports each
+  installed app's <code>tasks</code> module. Write rows
+  with <code>django_ox.stored.create_schedule</code> and <code>update_schedule</code>, not
+  <code>objects.create()</code>: <code>save()</code> runs no validation and leaves the activation
+  boundary stale. Retiming a stored schedule reschedules it from the moment of
+  the change, and re-enabling a paused one does not replay what it missed.</li>
 <li><code>ox_prune --older-than 7d</code> deletes finished rows; FAILED rows stay unless
   <code>--include-failed</code>. READY and RUNNING rows are never deleted.</li>
 <li><code>path("ox/", include("django_ox.urls"))</code> mounts <code>GET /ox/metrics</code>, the

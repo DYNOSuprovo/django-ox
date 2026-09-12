@@ -16,7 +16,7 @@
         <link rel="prev" href="../configuration/">
       
       
-        <link rel="next" href="../patterns/">
+        <link rel="next" href="../stored-schedules/">
       
       
         
@@ -481,6 +481,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#fixed-intervals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed intervals
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#missed-ticks" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -506,6 +517,33 @@
   
 </nav>
       
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stored-schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -896,6 +934,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#fixed-intervals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed intervals
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#missed-ticks" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -938,10 +987,14 @@
 
 
 <h1 id="recurring-tasks">Recurring tasks</h1>
-<p>django-ox runs cron-style schedules with no separate scheduler process. You
-declare them in settings, next to the backend they enqueue through, so they are
-versioned and deployed with your code. The database holds a dispatch log and
-nothing else. There are no schedule rows to edit by hand.</p>
+<p>django-ox runs cron-style schedules with no separate scheduler process.</p>
+<p>Declare them in settings and they deploy with your code, versioned alongside the
+tasks they enqueue. That is the default, and for most schedules it is the right
+one: a schedule is part of how the application behaves, and a change to it
+belongs in a review and a release like any other.</p>
+<p>Store them in the database instead and someone can retime or pause one without a
+deploy. See <a href="../stored-schedules/">Schedules in the database</a> for when that is
+worth the trade and what it costs.</p>
 <div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
     <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
         <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
@@ -963,7 +1016,8 @@ nothing else. There are no schedule rows to edit by hand.</p>
 <span class="p">}</span>
 </code></pre></div>
 <p>Each tick enqueues an ordinary task. Workers claim it through the normal queue,
-so retries, backoff, priorities and the result store all work as usual.</p>
+so retries, backoff, priorities and the result store all work as usual, and
+execution is at-least-once exactly as it is everywhere else.</p>
 <h2 id="schedule-keys">Schedule keys</h2>
 <p>The dictionary keys are the schedule names. They must be non-empty strings of at
 most 128 characters.</p>
@@ -988,8 +1042,18 @@ other's ticks. A duplicate is rejected at worker startup and by
 </tr>
 <tr>
 <td><code>cron</code></td>
-<td>yes</td>
+<td>one of</td>
 <td>Five-field cron expression or <code>@</code> shortcut, syntax below.</td>
+</tr>
+<tr>
+<td><code>every</code></td>
+<td>one of</td>
+<td>A fixed interval, as a <code>timedelta</code> or a number of seconds.</td>
+</tr>
+<tr>
+<td><code>phase</code></td>
+<td>no</td>
+<td>Shifts an <code>every</code> sequence. A <code>timedelta</code> or seconds, less than <code>every</code>.</td>
 </tr>
 <tr>
 <td><code>args</code></td>
@@ -1142,12 +1206,44 @@ works like this:</p>
 <li>When workers race the same tick, exactly one <code>INSERT</code> succeeds.</li>
 <li>The losers stop at the constraint and enqueue nothing.</li>
 </ol>
-<p>So each tick fires exactly once, whatever the worker count, and dispatch keeps
+<p>So a due tick is enqueued once, whatever the worker count, and dispatch keeps
 working as long as one worker is alive. Scheduling is a property of the workers
 you already run. There is nothing extra to deploy, monitor or fail over.</p>
+<p>This deduplicates the enqueue, not the execution. The task that a tick enqueues
+runs under the same at-least-once contract as every other task, so write it to
+be safe to run twice.</p>
+<h2 id="fixed-intervals">Fixed intervals</h2>
+<p><code>every</code> is the alternative to <code>cron</code>, for a cadence cron cannot express:</p>
+<div class="highlight"><pre><span></span><code><span class="s2">"SCHEDULES"</span><span class="p">:</span> <span class="p">{</span>
+    <span class="s2">"poll-inbox"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"task"</span><span class="p">:</span> <span class="s2">"mail.tasks.poll"</span><span class="p">,</span> <span class="s2">"every"</span><span class="p">:</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">minutes</span><span class="o">=</span><span class="mi">90</span><span class="p">)},</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Exactly one of <code>cron</code> and <code>every</code> is required.</p>
+<p><strong>Interval ticks are counted from a fixed instant, not from the last run.</strong>
+Every ninety minutes means 00:00, 01:30, 03:00 and so on, whatever time the
+schedule was deployed and whatever the workers have been doing. Nothing about
+a restart, a pause, a resume or an edit moves the sequence, because none of
+them is an input to it: every worker computes the same instants from the
+definition and the clock, which is what keeps dispatch leaderless.</p>
+<p>That is the difference from <code>django-celery-beat</code>, where an interval is measured
+from the previous run, so the sequence depends on when that run happened. If you
+want a sequence offset from the grid, say so with <code>phase</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Hourly, at ten past, rather than on the hour.</span>
+<span class="p">{</span>
+    <span class="s2">"task"</span><span class="p">:</span> <span class="s2">"reports.tasks.hourly"</span><span class="p">,</span>
+    <span class="s2">"every"</span><span class="p">:</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">hours</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+    <span class="s2">"phase"</span><span class="p">:</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">minutes</span><span class="o">=</span><span class="mi">10</span><span class="p">),</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><code>every</code> must be at least one second. The dispatch loop looks about once a
+second and only the latest due tick fires, so anything faster would be
+coalesced away rather than run.</p>
+<p>Interval ticks are wall-clock, exactly as cron ticks are, so the
+daylight-saving behaviour above applies to them too.</p>
 <h2 id="missed-ticks">Missed ticks</h2>
 <p><strong>If every worker was down when a tick passed, the most recent missed tick fires
-once on recovery. Older ones are skipped.</strong></p>
+once on recovery. Older ones are skipped</strong>, so a tick can be enqueued late, and
+some ticks are deliberately never enqueued at all.</p>
 <p>A nightly job due during an unlucky deploy still runs when workers return. A
 weekend of downtime on a five-minute schedule does not replay hundreds of stale
 runs.</p>
@@ -1219,13 +1315,13 @@ the tick before the first real fire.</p>
         
         
           
-          <a href="../patterns/" class="md-footer__link md-footer__link--next" aria-label="Next: Common patterns">
+          <a href="../stored-schedules/" class="md-footer__link md-footer__link--next" aria-label="Next: Schedules in the database">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Common patterns
+                Schedules in the database
               </div>
             </div>
             <div class="md-footer__button md-icon">
