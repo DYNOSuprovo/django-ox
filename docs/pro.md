@@ -95,8 +95,8 @@ lapses, what is deployed keeps running.
 Planned at **$399 per year, per company**, flat. One licence to cover a whole
 organisation and every environment, with a seven-day money-back period. The
 term is 12 months and renews for successive 12-month terms unless you cancel.
-Cancellation takes effect at the end of the period you have paid for. The full
-terms, including how to cancel, are stated at purchase.
+Cancel by writing to support@oxpull.com. Cancellation takes effect at the end
+of the period you have paid for. The full terms are stated at purchase.
 
 ## Waitlist
 
