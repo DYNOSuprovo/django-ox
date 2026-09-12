@@ -3209,12 +3209,17 @@ part of the tested matrix. Batches have been measured to 1,000,000 members
 in a single batch on all three, with every count checked against the task
 rows rather than against what the API reports about itself.
 
-Sealing a batch that wide takes about 34 ms on SQLite, 0.7 s on PostgreSQL
-and 28 s on MySQL. Sealing takes a row
-lock per member on any database that offers one, and a million InnoDB
-locks in a single transaction is what that costs. Reconciling the same
-batch is 4.9 s on SQLite, 0.4 s on PostgreSQL and 7.3 s on MySQL, against
-a reconciler that runs on a one-minute tick.
+Sealing a batch that wide from inside a caller's transaction takes about
+34 ms on SQLite, 0.7 s on PostgreSQL and 28 s on MySQL. That path counts
+with a row lock per member wherever the database offers one, and a
+million InnoDB locks in one transaction is where the MySQL figure comes
+from. Called outside a transaction, `seal()` counts with a single
+`COUNT(*)` instead. Timing those two statements alone against a
+million-member batch with fresh statistics, the locking read took 12 s on
+MySQL and 0.55 s on PostgreSQL, and the `COUNT(*)` 0.7 s on MySQL and
+0.03 s on PostgreSQL.
+Reconciling the same batch is 4.9 s on SQLite, 0.4 s on PostgreSQL and
+7.3 s on MySQL, against a reconciler that runs on a one-minute tick.
 
 Measured on an arm64 macOS host, with SQLite on a local file in WAL mode
 at `synchronous=NORMAL`, and stock PostgreSQL 16 and MySQL 8 images in
