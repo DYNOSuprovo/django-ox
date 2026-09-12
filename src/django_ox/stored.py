@@ -629,8 +629,9 @@ class DatabaseScheduleSource:
 
         None means the row is gone, is disabled, or no longer describes a
         schedule this deployment can run. The dispatch loop treats all three
-        the same way: it writes nothing, so the tick stays unclaimed and a
-        worker with a current view can still act on it.
+        the same way: it commits nothing (on SQLite the lock is a no-op
+        UPDATE, rolled back with the rest), so the tick stays unclaimed and
+        a worker with a current view can still act on it.
         """
         try:
             row = _lock_row(pk, db_alias)

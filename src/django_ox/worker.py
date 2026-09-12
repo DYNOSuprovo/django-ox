@@ -2345,8 +2345,11 @@ class Worker:
                     # The lock is taken before the enqueue rather than after.
                     # The enqueue itself is an INSERT that takes no lock on
                     # this row, so for it there is no order to invert, and
-                    # deciding first means a refused tick issues no write to
-                    # roll back. A task_enqueued receiver is another matter:
+                    # deciding first means a refused tick commits nothing:
+                    # on PostgreSQL and MySQL it writes nothing at all, and
+                    # on SQLite the lock is itself a no-op UPDATE that the
+                    # rollback takes back. A task_enqueued receiver is
+                    # another matter:
                     # it runs inside this transaction, under this lock, and
                     # can take locks of its own. The documented rule for
                     # receivers is that they take none a transaction that

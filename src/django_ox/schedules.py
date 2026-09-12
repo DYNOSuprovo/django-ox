@@ -162,9 +162,10 @@ class Schedule:
     #: labels for one row would write two tick rows for the same instant and
     #: both fire.
     dispatch_key: str = ""
-    #: Called inside the dispatch transaction, before anything is written.
-    #: Returns this schedule as it stands right now, under its own lock, or
-    #: None if it is gone or disabled.
+    #: Called inside the dispatch transaction, before anything is committed:
+    #: on SQLite taking the lock is itself a no-op write, and a refusal rolls
+    #: it back with the rest. Returns this schedule as it stands right now,
+    #: under its own lock, or None if it is gone or disabled.
     #:
     #: A snapshot is a fast filter and nothing more. Whether a tick commits
     #: is decided from what this returns, because every column the decision
