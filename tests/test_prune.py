@@ -6,7 +6,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from django_ox.management.commands.ox_prune import parse_duration
+from django_ox.durations import parse_duration
 from django_ox.models import OxScheduleTick, OxTask
 
 

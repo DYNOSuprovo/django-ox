@@ -226,8 +226,8 @@ python manage.py ox_health --max-backlog 1000 --max-age 600
 | --- | --- | --- |
 | `--queue` | all queues | Restrict the checks to one queue. |
 | `--max-backlog` | off | Fail when more than this many READY tasks are eligible to run. |
-| `--max-age` | off | Fail when the oldest waiting task has waited longer than this many seconds. |
-| `--worker-timeout` | off | Fail when no worker has claimed a task within this many seconds. |
+| `--max-age` | off | Fail when the oldest waiting task has waited longer than this. Accepts `7d`, `24h`, `90m`, `45s`, or a plain number of seconds. |
+| `--worker-timeout` | off | Fail when no worker has claimed a task within this long. Accepts `7d`, `24h`, `90m`, `45s`, or a plain number of seconds. |
 
 Mounting `path("ox/", include("django_ox.urls"))` exposes `GET /ox/metrics`,
 the same numbers as Prometheus gauges; the view has no authentication of its

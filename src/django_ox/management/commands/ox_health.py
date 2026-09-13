@@ -5,6 +5,7 @@ from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import DatabaseError
 
 from django_ox import stats
+from django_ox.durations import parse_seconds
 
 
 def _seconds(value: timedelta | None) -> str:
@@ -36,21 +37,22 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             "--max-age",
-            type=float,
+            type=parse_seconds,
             default=None,
             help=(
                 "Fail when the oldest task waiting to run has waited longer "
-                "than this many seconds since becoming eligible "
-                "(default: no age check)."
+                "than this since becoming eligible. Accepts 7d, 24h, 90m, 45s, "
+                "or a plain number of seconds (default: no age check)."
             ),
         )
         parser.add_argument(
             "--worker-timeout",
-            type=float,
+            type=parse_seconds,
             default=None,
             help=(
-                "Fail when no worker has claimed a task within this many "
-                "seconds. Claim activity is the only worker trace in the "
+                "Fail when no worker has claimed a task within this long. "
+                "Accepts 7d, 24h, 90m, 45s, or a plain number of seconds. "
+                "Claim activity is the only worker trace in the "
                 "database, so this check suits queues with steady traffic; "
                 "for bursty queues prefer --max-age (default: no worker "
                 "check)."

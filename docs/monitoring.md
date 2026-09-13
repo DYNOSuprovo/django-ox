@@ -63,8 +63,8 @@ python manage.py ox_health --max-backlog 1000 --max-age 600
 | --- | --- | --- |
 | `--queue` | all queues | Restrict the checks to one queue. |
 | `--max-backlog` | off | Fail when more than this many READY tasks are eligible to run. Deferred tasks do not count. |
-| `--max-age` | off | Fail when the oldest waiting task has waited longer than this many seconds since becoming eligible. |
-| `--worker-timeout` | off | Fail when no worker has claimed a task within this many seconds, or no claim was ever recorded. |
+| `--max-age` | off | Fail when the oldest waiting task has waited longer than this since becoming eligible. Accepts `7d`, `24h`, `90m`, `45s`, or a plain number of seconds. |
+| `--worker-timeout` | off | Fail when no worker has claimed a task within this long, or no claim was ever recorded. Accepts `7d`, `24h`, `90m`, `45s`, or a plain number of seconds. |
 
 On success it prints the measured values, which is useful in cron mail
 and probe logs:

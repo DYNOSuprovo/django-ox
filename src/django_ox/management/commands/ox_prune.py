@@ -1,26 +1,11 @@
-import re
-from datetime import timedelta
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db.models import QuerySet
 from django.utils import timezone
 
+from django_ox.durations import parse_duration
 from django_ox.models import OxScheduleTick, OxTask
-
-DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-
-
-def parse_duration(value: str) -> timedelta:
-    """Parse '7d' / '24h' / '90m' / '45s' or a plain number of seconds."""
-    match = re.fullmatch(r"(\d+)([smhd]?)", value.strip())
-    if match is None:
-        raise CommandError(
-            f"Invalid duration {value!r}; use forms like 7d, 24h, 90m, 45s, "
-            "or a plain number of seconds."
-        )
-    number, unit = match.groups()
-    return timedelta(seconds=int(number) * DURATION_UNITS[unit or "s"])
 
 
 class Command(BaseCommand):
