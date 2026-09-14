@@ -161,6 +161,7 @@ python manage.py ox_prune --older-than 7d
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
+| `--queue` | all queues | Delete only this queue's task rows, so queues with different retention needs can be pruned separately. Same name and meaning as `ox_health --queue`. Old schedule ticks are still pruned for every schedule. |
 | `--older-than` | `7d` | Minimum time since the task finished. Accepts `7d`, `24h`, `90m`, `45s`, or a plain number of seconds. |
 | `--include-failed` | off | Also delete FAILED and LOST rows. By default they are kept, because they hold the per-attempt tracebacks and can be retried. |
 | `--batch-size` | `1000` | Rows per DELETE statement, so pruning a large table never takes a long lock or builds a giant IN clause. Must be at least 1. |
@@ -175,6 +176,11 @@ make the schedule re-anchor. The latest tick row of a schedule that has
 been removed from settings is kept by the same rule; such rows are
 harmless and can be deleted by hand if unwanted. See
 [Recurring tasks](recurring-tasks.md#missed-ticks).
+
+`--queue` narrows the task rows, not the tick log. A run for one queue
+prunes every schedule's old ticks at its own cutoff, so when queues are
+pruned separately, the shortest `--older-than` decides how much tick
+history stays.
 
 ## ox_health
 
