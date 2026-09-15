@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ox_health --queue`, so queues with different retention needs can each
   be pruned with their own `--older-than`. Old schedule ticks are still
   pruned for every schedule.
+- `ox_health --format json` prints the check figures as one JSON object
+  for container healthchecks and monitoring agents. On a failing check the
+  object is still printed, and the exit status is unchanged.
 
 ### Changed
 

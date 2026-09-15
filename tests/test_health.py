@@ -1,4 +1,5 @@
 import argparse
+import json
 from datetime import timedelta
 from io import StringIO
 
@@ -47,11 +48,89 @@ def health(*args):
     return out.getvalue()
 
 
+def health_json(*args):
+    out = StringIO()
+    error = None
+    try:
+        call_command("ox_health", "--format", "json", *args, stdout=out)
+    except CommandError as exc:
+        error = exc
+    return json.loads(out.getvalue()), error
+
+
 @pytest.mark.django_db
 class TestHealth:
     def test_ok_with_no_flags_on_empty_database(self):
         out = health()
         assert out.startswith("OK: backlog=0 oldest_age=none last_claim_age=none")
+
+    def test_json_ok_reports_the_same_figures(self):
+        make_ready(seconds_ago=30)
+        make_claimed(seconds_ago=60)
+
+        report, error = health_json("--max-backlog=5")
+
+        assert error is None
+        assert report["ok"] is True
+        assert report["queue"] is None
+        assert report["backlog"] == 1
+        assert report["oldest_age_seconds"] == pytest.approx(30, abs=5)
+        assert report["last_claim_age_seconds"] == pytest.approx(60, abs=5)
+        assert report["problems"] == []
+
+    def test_json_on_empty_database_uses_null_ages(self):
+        report, error = health_json("--queue", "emails")
+
+        assert error is None
+        assert report == {
+            "ok": True,
+            "queue": "emails",
+            "backlog": 0,
+            "oldest_age_seconds": None,
+            "last_claim_age_seconds": None,
+            "problems": [],
+        }
+
+    def test_json_failure_prints_the_object_and_exits_non_zero(self):
+        make_ready()
+        make_ready()
+
+        report, error = health_json("--max-backlog=1", "--worker-timeout=60")
+
+        assert isinstance(error, CommandError)
+        assert report["ok"] is False
+        assert report["backlog"] == 2
+        assert report["problems"] == [
+            "backlog is 2, over --max-backlog 1",
+            "no task claim recorded (--worker-timeout 60s)",
+        ]
+        assert str(error) == "; ".join(report["problems"])
+
+    def test_json_database_unreachable_still_prints_the_object(self, monkeypatch):
+        def boom(queue_name=None):
+            raise DatabaseError("connection refused")
+
+        monkeypatch.setattr(ox_health.stats, "ready_count", boom)
+        report, error = health_json()
+
+        assert isinstance(error, CommandError)
+        assert report["ok"] is False
+        assert report["backlog"] is None
+        assert report["problems"] == ["Database unreachable: connection refused"]
+
+    def test_json_rejects_a_bad_threshold_but_still_prints_the_object(self):
+        report, error = health_json("--max-backlog=-1")
+
+        assert isinstance(error, CommandError)
+        assert report == {
+            "ok": False,
+            "queue": None,
+            "backlog": None,
+            "oldest_age_seconds": None,
+            "last_claim_age_seconds": None,
+            "problems": ["--max-backlog must be zero or a positive integer."],
+        }
+        assert str(error) == "--max-backlog must be zero or a positive integer."
 
     def test_database_unreachable_fails_with_reason(self, monkeypatch):
         def boom(queue_name=None):
