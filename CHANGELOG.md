@@ -63,8 +63,13 @@ stops a process on this release from writing a WAITING task afterwards, and
 nothing at `0007` refuses one. That's why the processes from step 3 stay
 stopped until they run 1.2.
 
-A backup that holds a WAITING task restores only into this release or a
-later one.
+A backup that holds a WAITING task is not refused by a 1.2 install.
+Nothing checks, and the row restores. A 1.2 install then leaves it where it
+is. No worker claims it, `ox_prune` does not delete it, and `retry` and
+`discard` both return False. `get_result()` raises `ValueError`, and
+`ox_health` counts the row in no column and still reports OK. Put this
+release back and the row moves again, so restore such a backup into this
+release or a later one.
 
 **Django 6.1 runs the system checks against every database alias.** A
 command that runs the full checks and does not name a database now checks
@@ -214,6 +219,9 @@ question from a constant, so a PostgreSQL alias is unaffected.
 - A worker ended by a second stop signal exits with code 130 without
   logging `second signal received; forcing exit.` first; the
   `--processes` supervisor still logs its own line.
+- The source distribution no longer carries the repository's `.gitignore`. It
+  carries the package, the licence, the README, the changelog and the files
+  that build it.
 
 ### Fixed
 
@@ -251,11 +259,10 @@ question from a constant, so a PostgreSQL alias is unaffected.
   **The admin reads the primary, and no setting changes that.** Every
   page of both admins reads the database its writes go to. Before this
   release those pages followed the read alias, so a router that splits
-  reads sent them to a replica. Measured over 27 identical admin
-  requests, 116 of django-ox's 158 statements moved off the replica and
-  onto the primary. The total is unchanged, so no page runs more queries
-  than it did, but the load lands on the database your workers use. If
-  you were serving admin reads off a replica on purpose, this ends it.
+  reads sent them to a replica. On a replica that lags, the schedule
+  admin's add page then raised `OxSchedule.DoesNotExist` on the row it
+  had just written. The load now lands on the database your workers use.
+  If you were serving admin reads off a replica on purpose, this ends it.
 
   That is the right default, because the admin is not a reading page. It
   writes back what it read. A change form submits every field, including
@@ -278,7 +285,7 @@ question from a constant, so a PostgreSQL alias is unaffected.
   re-read now names the alias the claim was written to. PostgreSQL claims
   in one statement and reached this only through a subclass that overrides
   `claim_filter_q()` without `claim_filter_sql()`. SQLite takes the
-  compare-and-set path and was never affected. Present since 0.2.0.
+  compare-and-set path and was never affected.
 - Stored schedules read the database they are written to. Under a router
   that sends reads to a replica, creating or editing a schedule checked the
   name against the replica, so a name already taken on the primary passed
@@ -294,8 +301,7 @@ question from a constant, so a PostgreSQL alias is unaffected.
   the schedules are written to. The unique index on the name is unchanged:
   a check can't win a race against an insert that commits between the check
   and the write, so the index is what makes the name unique and the check
-  is what turns the ordinary duplicate into a field error. Present since
-  1.2.0, which added stored schedules.
+  is what turns the ordinary duplicate into a field error.
 - The schedule admin no longer writes a stale copy of a row over a newer
   one. Under a router that sends reads to a replica, Django built the
   changelist and the change form from the replica. A change form submits
@@ -325,11 +331,11 @@ question from a constant, so a PostgreSQL alias is unaffected.
   inside the transaction that deletes it. Only rows that still qualify are
   deleted, and nothing else can write to them until that transaction ends. A
   retry that reports success now keeps its row. Without the flag, `ox_prune`
-  was not affected. Present since 0.3.0, which added retry and discard.
+  was not affected.
 - `retry_many` and `discard_many` open their transaction on the database
   that `OxTask` writes to. Under a router that sends `OxTask` to another
   database, each UPDATE committed by itself. An error part-way could leave
-  some rows moved. Present since 0.3.0.
+  some rows moved.
 - The lease documentation put the renewal margin at two consecutive missed
   renewals. It is one. The renewal loop waits `LOCK_TIMEOUT / 3` after each
   renewal rather than firing on a fixed schedule, so every round costs the
@@ -343,19 +349,18 @@ question from a constant, so a PostgreSQL alias is unaffected.
   oldest task waiting to run or the last claim was. `--max-backlog` takes
   an int and was not affected, and neither was the `--worker-timeout`
   branch that reports no claim at all. They are refused as usage errors
-  now. Present since 0.1.0.
+  now.
 - A stop signal could leave an idle `ox_worker` hung instead of draining.
   It stayed hung until a second signal or the process manager ended it,
   or for good when it was a worker process whose supervisor had been
   killed. A worker that has finished starting now drains on the signal.
-  Present since 0.1.0.
 - A worker process whose supervisor died while the worker was still
   starting ran on as an orphan. It now drains and exits having claimed
-  nothing. Present since 0.3.0.
+  nothing.
 - If the `--processes` supervisor hit an error while running, a second
   stop signal did not send SIGKILL to a worker process that would not
   exit, and the supervisor waited for it forever. The second and third
-  signals now escalate as they do in any other stop. Present since 0.3.0.
+  signals now escalate as they do in any other stop.
 
 ## [1.2.0] - 2026-09-12
 

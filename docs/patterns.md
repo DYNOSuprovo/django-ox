@@ -27,9 +27,9 @@ def register(request):
 ```
 
 No `transaction.on_commit()` here. The enqueue is an `INSERT` on the same
-connection, so the task becomes visible to workers only when the transaction
-commits. If `create_user` is rolled back further up, the email task disappears
-with it.
+database as the `User` row, your default one, so the task becomes visible to
+workers only when the transaction commits. If `create_user` is rolled back
+further up, the email task disappears with it.
 
 Pass the id, not the object. Arguments are stored as JSON, and a stale copy of a
 model is a bug waiting to happen.
@@ -160,8 +160,9 @@ queue the backend does not accept, a task bound to another backend, or an
 argument that will not serialise to JSON raises with nothing inserted. The
 rows go in one `INSERT` per 1,000 (SQLite caps the variables a statement can
 bind) inside one transaction, so a call of 5,000 commits all 5,000 or none,
-and inside your own `transaction.atomic()` it commits or rolls back with
-the rest of your work, as `enqueue()` does.
+and inside a `transaction.atomic()` opened on the database that holds
+`OxTask` it commits or rolls back with the rest of the work you write there,
+as `enqueue()` does.
 
 This is a bulk insert and nothing more. Grouping the
 tasks, reading their progress as one number and firing a callback when the
@@ -266,7 +267,7 @@ to exercise claiming and retries for real.
 
 ## Not in the core
 
-Batches, unique or deduplicated tasks, and rate limiting are in
+Batches, unique or deduplicated tasks, rate limiting and workflows are in
 [Oxpull Pro](pro.md), a paid add-on. Metrics are in the
 free tier: `django_ox.stats` and `manage.py ox_health` ship in the core. Chains
-and workflows are on the Pro roadmap, undated.
+are on the Pro roadmap, undated.
