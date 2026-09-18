@@ -1,19 +1,29 @@
 import re
 import threading
+import time
 import uuid
 from datetime import timedelta
 from io import StringIO
 
 import pytest
-from django.core.management import call_command
+from django.core.management import ManagementUtility, call_command
 from django.core.management.base import CommandError
-from django.db import connection, connections, transaction
+from django.db import (
+    DatabaseError,
+    OperationalError,
+    connection,
+    connections,
+    transaction,
+)
 from django.db.models.signals import pre_delete
 from django.utils import timezone
 
-from django_ox import actions
+from django_ox import _waiting, actions
 from django_ox.durations import parse_duration
 from django_ox.models import OxScheduleTick, OxTask
+
+from .contention import CONTENTION, failing, in_key_order, simulated
+from .test_waiting import waiting_for_a_lock
 
 
 def make_task(status, *, finished_days_ago=None, queue_name="default"):
@@ -167,6 +177,38 @@ class TestPrune:
 
         assert OxTask.objects.count() == 2
         assert "Deleted 0" in out
+
+    def test_prune_never_deletes_a_waiting_row(self):
+        # The same forced finished_at: a waiting row has not run, whatever
+        # its columns say, and the widest prune leaves it.
+        waiting = make_task(OxTask.Status.WAITING, finished_days_ago=399)
+
+        out = prune("--older-than=1s", "--include-failed")
+
+        assert set(OxTask.objects.values_list("pk", flat=True)) == {waiting.pk}
+        assert "Deleted 0" in out
+
+    def test_a_queue_prune_never_deletes_a_waiting_row(self):
+        # Waiting rows in the named queue and in another one, with the same
+        # forced finished_at. The finished row beside them shows the prune
+        # did delete something.
+        waiting = make_task(
+            OxTask.Status.WAITING, finished_days_ago=399, queue_name="emails"
+        )
+        elsewhere = make_task(OxTask.Status.WAITING, finished_days_ago=399)
+        make_task(OxTask.Status.SUCCESSFUL, finished_days_ago=399, queue_name="emails")
+        args = ("--queue", "emails", "--older-than=1s", "--include-failed")
+        label = "SUCCESSFUL/DISCARDED/FAILED/LOST (queue emails)"
+
+        dry = prune(*args, "--dry-run")
+        out = prune(*args)
+
+        assert f"Would delete 1 {label} task row(s)" in dry
+        assert f"Deleted 1 {label} task row(s)" in out
+        assert set(OxTask.objects.values_list("pk", flat=True)) == {
+            waiting.pk,
+            elsewhere.pk,
+        }
 
     def test_older_than_cutoff_boundary(self):
         newer = make_task(OxTask.Status.SUCCESSFUL, finished_days_ago=0)
@@ -322,14 +364,20 @@ def _sql(sql):
     return sql.replace('"', "").replace("`", "").upper()
 
 
+def _writes_or_locks(sql):
+    text = _sql(sql).lstrip()
+    return text.startswith(("UPDATE", "DELETE")) or "FOR UPDATE" in text
+
+
 class Beside:
     """
     An operator action, run on its own thread and connection while ox_prune
     is part way through deleting a batch.
 
     start() returns once the action has finished, or once it has waited in
-    its first write for GRACE seconds. A write that waits that long is
-    waiting on the prune, and cannot go on until the prune commits.
+    its first write or locking read for GRACE seconds. A statement that waits
+    that long is waiting on the prune, and cannot go on until the prune
+    commits.
     """
 
     GRACE = 2.0
@@ -343,7 +391,7 @@ class Beside:
 
     def _run(self):
         def note_write(execute, sql, params, many, context):
-            if _sql(sql).lstrip().startswith(("UPDATE", "DELETE")):
+            if _writes_or_locks(sql):
                 self.writing.set()
             return execute(sql, params, many, context)
 
@@ -486,6 +534,52 @@ def prune_while_an_action_is_open(action, *args, hold=5.0):
     if state["error"] is not None:
         raise state["error"]
     return out, state["result"], state["pruned_first"]
+
+
+def prune_beside_an_open_action(action, *args):
+    """
+    Run `action` in a transaction on its own thread, then ox_prune. The
+    action's transaction stays open until the prune sends its first write or
+    locking read, and commits a moment later, while that statement waits on
+    the rows the action wrote.
+    """
+    acted = threading.Event()
+    reached = threading.Event()
+    state = {"result": None, "error": None, "reached": False}
+
+    def act():
+        try:
+            with transaction.atomic(using="default"):
+                state["result"] = action()
+                acted.set()
+                reached.wait(30)
+                time.sleep(Beside.GRACE / 4)
+        except BaseException as exc:
+            state["error"] = exc
+        finally:
+            acted.set()
+            connections.close_all()
+
+    def note_reach(execute, sql, params, many, context):
+        if _writes_or_locks(sql):
+            state["reached"] = True
+            reached.set()
+        return execute(sql, params, many, context)
+
+    thread = threading.Thread(target=act)
+    thread.start()
+    assert acted.wait(30), "the action never ran"
+    try:
+        with connection.execute_wrapper(note_reach):
+            out = prune(*args)
+    finally:
+        reached.set()
+        thread.join(60)
+    assert not thread.is_alive(), "the action outlived the prune"
+    if state["error"] is not None:
+        raise state["error"]
+    assert state["reached"], "the prune never wrote or locked a row"
+    return out, state["result"]
 
 
 WIDEN = ["statement", "signal"]
@@ -666,3 +760,343 @@ class TestPruneAgainstOperatorActions:
         assert set(OxTask.objects.values_list("pk", "status")) == {
             (elsewhere, OxTask.Status.READY)
         }
+
+    @pytest.mark.parametrize("widen", WIDEN)
+    def test_a_revive_inside_the_delete_is_not_undone(self, widen):
+        """
+        A package built on django-ox can move a DISCARDED row back to WAITING.
+        A revive that reports the row revived keeps it. One the prune got to
+        first reports it not found.
+        """
+        victim, *_ = make_old_rows(5, OxTask.Status.DISCARDED)
+
+        def revive(_ids):
+            try:
+                return _waiting.revive_many([(victim, 0)], using="default")
+            except OperationalError:
+                # SQLite has no row locks. A revive that has read while the
+                # prune holds the write lock can't take it, and moves nothing.
+                if connection.vendor != "sqlite":
+                    raise
+                return None
+
+        out, result = prune_during_batch_delete(widen, revive)
+
+        row = OxTask.objects.filter(pk=victim).first()
+        if result == {victim: _waiting.Revival.REVIVED}:
+            assert row is not None, (
+                "revive_many() reported the row revived, and ox_prune deleted it anyway"
+            )
+            assert (row.status, row.lease_epoch) == (OxTask.Status.WAITING, 1)
+        else:
+            assert result in (None, {victim: _waiting.Revival.NOT_FOUND})
+            assert row is None
+        assert deleted_task_count(out) == 5 - OxTask.objects.count()
+
+    def test_a_prune_that_waits_on_an_open_revive_keeps_the_row(self):
+        """
+        The revive has moved the row back to WAITING and not yet committed
+        when the prune reaches the row. The prune waits for it, then finds the
+        row no longer prunable and leaves it.
+        """
+        victim, *_ = make_old_rows(3, OxTask.Status.DISCARDED)
+
+        out, result = prune_beside_an_open_action(
+            lambda: _waiting.revive_many([(victim, 0)], using="default")
+        )
+
+        assert result == {victim: _waiting.Revival.REVIVED}
+        row = OxTask.objects.filter(pk=victim).first()
+        assert row is not None, (
+            "revive_many() revived the row, and ox_prune deleted it once the "
+            "revive committed"
+        )
+        assert (row.status, row.lease_epoch) == (OxTask.Status.WAITING, 1)
+        assert deleted_task_count(out) == 2
+
+
+def old_failed_rows(keys, *, queue_name="default"):
+    """Old FAILED rows with these keys, inserted in the order given."""
+    now = timezone.now()
+    for pk in keys:
+        OxTask.objects.create(
+            id=pk,
+            task_path="tests.tasks.add",
+            backend_name="default",
+            queue_name=queue_name,
+            enqueued_at=now - timedelta(days=31),
+            status=OxTask.Status.FAILED,
+            attempts=3,
+            max_attempts=3,
+            finished_at=now - timedelta(days=30),
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("waits_first", ["action", "prune"])
+@pytest.mark.parametrize(
+    "act,moved_to",
+    [
+        (actions.retry_many, OxTask.Status.READY),
+        (actions.discard_many, OxTask.Status.DISCARDED),
+    ],
+    ids=["retry_many", "discard_many"],
+)
+def test_a_bulk_action_and_a_prune_of_the_same_rows_wait_rather_than_deadlock(
+    act, moved_to, waits_first
+):
+    """
+    Two old FAILED rows, the larger key inserted first, so a scan in table
+    order meets them in the reverse of key order. A third session holds one of
+    them. The first caller waits on it, the second caller starts and waits
+    too, and then the holder commits.
+
+    An action whose UPDATE locks in table order deadlocks with the prune in
+    both of these on PostgreSQL. When the action waits first, on the larger
+    key, the prune takes the smaller key while it queues for the larger, and
+    the action wants the smaller one next. When the prune waits first, on the
+    smaller key, the action takes the larger one while it queues for the
+    smaller, and the prune wants the larger one next. Locking in key order,
+    the second caller queues for the smaller key holding nothing.
+
+    Every statement on both sides is watched. A deadlock a retry then hid
+    still fails the test.
+    """
+    if not connection.features.has_select_for_update:
+        pytest.skip("SQLite has no row locks to take in any order")
+    small, large = in_key_order(uuid.uuid4() for _ in range(2))
+    old_failed_rows([large, small])
+    held = large if waits_first == "action" else small
+
+    locked = threading.Event()
+    release = threading.Event()
+    errors = []
+    outcome = {}
+
+    def hold():
+        try:
+            with transaction.atomic():
+                list(
+                    OxTask.objects.select_for_update().filter(pk=held).values_list("pk")
+                )
+                locked.set()
+                release.wait(30)
+        finally:
+            locked.set()
+            connections.close_all()
+
+    def watched(name, body):
+        def note(execute, sql, params, many, context):
+            try:
+                return execute(sql, params, many, context)
+            except DatabaseError as exc:
+                errors.append((name, exc))
+                raise
+
+        try:
+            with connection.execute_wrapper(note):
+                outcome[name] = body()
+        except Exception as exc:
+            outcome[name] = exc
+        finally:
+            connections.close_all()
+
+    callers = {
+        "action": lambda: act([small, large]),
+        "prune": lambda: prune("--include-failed"),
+    }
+    order = [waits_first, "prune" if waits_first == "action" else "action"]
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert locked.wait(10)
+    threads = []
+    waited = []
+    for count, name in enumerate(order, start=1):
+        thread = threading.Thread(target=watched, args=(name, callers[name]))
+        thread.start()
+        threads.append(thread)
+        waited.append(waiting_for_a_lock(count))
+    release.set()
+    for thread in [holder, *threads]:
+        thread.join(60)
+        assert not thread.is_alive()
+
+    # The interleaving happened: each caller waited on a lock.
+    assert waited == [True, True]
+    assert errors == []
+    rows = dict(OxTask.objects.values_list("pk", "status"))
+    if waits_first == "action":
+        assert outcome["action"] == (2, 0)
+        assert rows == {small: moved_to, large: moved_to}
+        assert deleted_task_count(outcome["prune"]) == 0
+    else:
+        assert deleted_task_count(outcome["prune"]) == 2
+        assert outcome["action"] == (0, 2)
+        assert rows == {}
+
+
+@pytest.mark.django_db(transaction=True)
+class TestPruneAfterContention:
+    """
+    ox_prune commits batch by batch. A batch that loses a deadlock or a
+    serialization failure runs again in a new transaction, up to three times,
+    and after that the command stops with an error that says a rerun finishes.
+    The errors are simulated in place of the batch's DELETE, shaped as Django
+    raises the drivers' (tests/test_contention.py pins the shape).
+    """
+
+    ARGS = ("--include-failed", "--batch-size=2")
+    DELETE = "DELETE FROM DJANGO_OX_OXTASK"
+
+    @pytest.mark.parametrize("kind", CONTENTION)
+    def test_a_batch_that_loses_runs_again_and_checks_its_rows_again(self, kind):
+        make_old_rows(5, OxTask.Status.FAILED)
+        state = {"retried": None}
+
+        def act(execute, sql, params, many, context):
+            # The first statement after the lost DELETE belongs to the second
+            # attempt at that batch. Before it runs, an operator retries one of
+            # the batch's rows on another connection.
+            if len(deletes) == 2 and state["retried"] is None:
+                pk = deletes[1][1][0]
+                beside = Beside(lambda: actions.retry(pk))
+                beside.thread.start()
+                assert beside.finish() is True
+                state["retried"] = pk
+            return execute(sql, params, many, context)
+
+        with (
+            connection.execute_wrapper(act),
+            failing(self.DELETE, lambda: simulated(kind), lambda n: n == 2) as deletes,
+        ):
+            out = prune(*self.ARGS)
+
+        # Batches of 2, 1 (the retried row left its batch) and 1.
+        assert deleted_task_count(out) == 4
+        assert len(deletes) == 4
+        assert set(OxTask.objects.values_list("pk", "status")) == {
+            (state["retried"], OxTask.Status.READY)
+        }
+
+    @pytest.mark.parametrize("kind", CONTENTION)
+    def test_a_batch_that_lost_leaves_the_next_batch_its_own_three_attempts(self, kind):
+        """
+        The three attempts belong to the batch, not to the run. Five rows in
+        batches of two, where the first batch loses once and then commits, and
+        the second loses twice before it commits. The second batch's third
+        attempt is the one that deletes it, so the command finishes and every
+        row is gone. A run that shared one budget across its batches would
+        stop here with two rows left.
+        """
+        make_old_rows(5, OxTask.Status.FAILED)
+
+        with failing(
+            self.DELETE, lambda: simulated(kind), lambda n: n in (1, 3, 4)
+        ) as deletes:
+            out = prune(*self.ARGS)
+
+        # Batch one twice, batch two three times, batch three once.
+        assert len(deletes) == 6
+        assert deleted_task_count(out) == 5
+        assert OxTask.objects.count() == 0
+
+    @pytest.mark.parametrize("kind", CONTENTION)
+    def test_a_batch_that_keeps_losing_stops_the_prune_and_a_rerun_finishes(self, kind):
+        make_old_rows(5, OxTask.Status.FAILED)
+
+        with (
+            failing(self.DELETE, lambda: simulated(kind), lambda n: n >= 2) as deletes,
+            pytest.raises(CommandError) as info,
+        ):
+            prune(*self.ARGS)
+
+        assert str(info.value) == (
+            "Stopped after deleting 2 SUCCESSFUL/DISCARDED/FAILED/LOST task row(s). "
+            "The next batch hit a database deadlock or serialization failure 3 "
+            "times. The rows already deleted stay deleted. Run ox_prune again to "
+            "prune the rest."
+        )
+        assert isinstance(info.value.__cause__, OperationalError)
+        assert len(deletes) == 1 + 3
+        assert OxTask.objects.count() == 3
+
+        assert deleted_task_count(prune(*self.ARGS)) == 3
+        assert OxTask.objects.count() == 0
+
+    @pytest.mark.parametrize("kind", CONTENTION)
+    def test_a_prune_that_gives_up_exits_non_zero_from_the_command_line(
+        self, kind, monkeypatch, capsys
+    ):
+        """
+        Through the command line, as cron runs it, rather than call_command.
+        The command exits 1 with the message on stderr, having paused between
+        its attempts at the batch.
+        """
+        make_old_rows(5, OxTask.Status.FAILED)
+        pauses = []
+        monkeypatch.setattr("django_ox._contention.pause", pauses.append)
+        # The system checks read every alias, which this test doesn't open.
+        argv = ["manage.py", "ox_prune", *self.ARGS, "--skip-checks"]
+
+        with (
+            failing(self.DELETE, lambda: simulated(kind), lambda n: n >= 2),
+            pytest.raises(SystemExit) as info,
+        ):
+            ManagementUtility(argv).execute()
+
+        assert info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Stopped after deleting 2 " in err
+        assert "Run ox_prune again to prune the rest." in err
+        assert pauses == [1, 2]
+        assert OxTask.objects.count() == 3
+
+    def test_a_batch_whose_commit_fails_counts_once(self, monkeypatch):
+        make_old_rows(5, OxTask.Status.FAILED)
+        wrapper = connections["default"]
+        real_commit = wrapper.commit
+        failed = []
+
+        def commit():
+            if not failed:
+                failed.append(True)
+                raise simulated("postgresql-serialization")
+            return real_commit()
+
+        monkeypatch.setattr(wrapper, "commit", commit)
+        out = prune(*self.ARGS)
+        monkeypatch.undo()
+
+        assert failed == [True]
+        assert deleted_task_count(out) == 5
+        assert OxTask.objects.count() == 0
+
+    @pytest.mark.parametrize("kind", CONTENTION)
+    def test_inside_a_callers_transaction_a_lost_batch_is_not_run_again(self, kind):
+        make_old_rows(5, OxTask.Status.FAILED)
+
+        with (
+            failing(self.DELETE, lambda: simulated(kind), lambda n: n == 1) as deletes,
+            pytest.raises(OperationalError),
+            transaction.atomic(),
+        ):
+            prune(*self.ARGS)
+
+        assert len(deletes) == 1
+        assert OxTask.objects.count() == 5
+
+    def test_any_other_database_error_stops_the_prune_at_once(self):
+        make_old_rows(5, OxTask.Status.FAILED)
+
+        with (
+            failing(
+                self.DELETE,
+                lambda: OperationalError("disk I/O error"),
+                lambda n: n == 2,
+            ) as deletes,
+            pytest.raises(OperationalError, match="disk I/O"),
+        ):
+            prune(*self.ARGS)
+
+        assert len(deletes) == 2
+        assert OxTask.objects.count() == 3
