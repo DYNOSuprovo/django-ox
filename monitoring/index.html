@@ -1023,10 +1023,11 @@ request, a shell or a metrics collector, on every tested database.</p>
 <span class="c1">#  QueueStats(queue_name="emails", ready=0, running=0, failed=2, successful=560, lost=0, discarded=0)]</span>
 
 <span class="n">stats</span><span class="o">.</span><span class="n">ready_count</span><span class="p">()</span>  <span class="c1"># tasks eligible to run right now</span>
-<span class="n">stats</span><span class="o">.</span><span class="n">oldest_ready_age</span><span class="p">()</span>  <span class="c1"># timedelta, or None when nothing waits</span>
+<span class="n">stats</span><span class="o">.</span><span class="n">oldest_ready_age</span><span class="p">()</span>  <span class="c1"># timedelta, or None when no READY task is eligible</span>
 <span class="n">stats</span><span class="o">.</span><span class="n">throughput</span><span class="p">(</span><span class="n">timedelta</span><span class="p">(</span><span class="n">minutes</span><span class="o">=</span><span class="mi">5</span><span class="p">))</span>  <span class="c1"># terminal outcomes per minute</span>
 <span class="n">stats</span><span class="o">.</span><span class="n">failure_rate</span><span class="p">(</span><span class="n">timedelta</span><span class="p">(</span><span class="n">minutes</span><span class="o">=</span><span class="mi">5</span><span class="p">))</span>  <span class="c1"># 0.0 to 1.0, or None</span>
 <span class="n">stats</span><span class="o">.</span><span class="n">last_claim_age</span><span class="p">()</span>  <span class="c1"># time since a worker last claimed</span>
+<span class="n">stats</span><span class="o">.</span><span class="n">waiting_counts</span><span class="p">()</span>  <span class="c1"># WAITING tasks per queue, such as {"default": 4}</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1040,7 +1041,7 @@ request, a shell or a metrics collector, on every tested database.</p>
 <tr>
 <td><code>queue_stats()</code></td>
 <td><code>list[QueueStats]</code></td>
-<td>Raw row counts per queue and status (<code>ready</code>, <code>running</code>, <code>failed</code>, <code>successful</code>, <code>lost</code>, <code>discarded</code>), one entry per queue with any rows. The <code>ready</code> column counts every READY row, including tasks deferred to a future <code>run_after</code>. <code>lost</code> counts tasks whose worker stopped reporting with no attempts left; see <a href="../production/#the-reaper">the reaper</a>. <code>discarded</code> counts tasks an operator closed without running; see <a href="#retrying-and-discarding">Retrying and discarding</a>.</td>
+<td>Raw row counts per queue and status (<code>ready</code>, <code>running</code>, <code>failed</code>, <code>successful</code>, <code>lost</code>, <code>discarded</code>), one entry per queue with any rows. The <code>ready</code> column counts every READY row, including tasks deferred to a future <code>run_after</code>. <code>lost</code> counts tasks whose worker stopped reporting with no attempts left; see <a href="../production/#the-reaper">the reaper</a>. <code>discarded</code> counts tasks closed without running; see <a href="#retrying-and-discarding">Retrying and discarding</a>. A WAITING task is in no column. <code>waiting_counts()</code> counts those. A queue whose tasks are all WAITING gets an entry of zeros.</td>
 </tr>
 <tr>
 <td><code>ready_count()</code></td>
@@ -1050,7 +1051,7 @@ request, a shell or a metrics collector, on every tested database.</p>
 <tr>
 <td><code>oldest_ready_age()</code></td>
 <td><code>timedelta \| None</code></td>
-<td>Age of the oldest task waiting to run, measured from when it became eligible (<code>run_after</code> when set, <code>enqueued_at</code> otherwise), so a task deferred by a week does not read as a week of backlog.</td>
+<td>Age of the oldest eligible READY task, measured from when it became eligible (<code>run_after</code> when set, <code>enqueued_at</code> otherwise), so a task deferred by a week does not read as a week of backlog.</td>
 </tr>
 <tr>
 <td><code>throughput(window)</code></td>
@@ -1067,10 +1068,22 @@ request, a shell or a metrics collector, on every tested database.</p>
 <td><code>timedelta \| None</code></td>
 <td>Time since any worker last claimed a task, or <code>None</code> if none ever was. This is claim activity, not a heartbeat: idle workers over an empty queue record nothing.</td>
 </tr>
+<tr>
+<td><code>waiting_counts()</code></td>
+<td><code>dict[str, int]</code></td>
+<td>WAITING tasks per queue, for each queue that has any. A waiting task is held back from every worker until something releases it. django-ox never puts a task there by itself, and it isn't backlog.</td>
+</tr>
 </tbody>
 </table>
-<p>Every function except <code>queue_stats()</code> accepts a <code>queue_name</code> keyword to
+<p>Every function except <code>queue_stats()</code> and <code>waiting_counts()</code> accepts a <code>queue_name</code> keyword to
 scope the metric to one queue.</p>
+<p>Every one of them also accepts <code>using</code>, the database alias to read. Left
+out, they read the alias <code>OxTask</code> is written to, never the one
+<code>db_for_read</code> points at. On a project with no database router those are the
+same connection. On one that sends reads to a replica they are not, and a
+replica that is behind would answer for a queue nobody is running. The same
+goes for <code>ox_health</code> and the Prometheus endpoint, which read these
+functions.</p>
 <p><strong>Alert on two numbers: backlog depth (<code>ready_count</code>) and backlog age
 (<code>oldest_ready_age</code>).</strong> Neither works alone. Depth looks fine while one poisoned
 task starves the queue. Age looks fine during a flood of fresh work.</p>
@@ -1095,6 +1108,11 @@ With no flags, it checks only that the database answers.</p>
 <td>Restrict the checks to one queue.</td>
 </tr>
 <tr>
+<td><code>--format</code></td>
+<td><code>text</code></td>
+<td><code>json</code> prints one object on stdout instead of the <code>OK:</code> line: <code>ok</code>, <code>queue</code>, <code>backlog</code>, <code>oldest_age_seconds</code>, <code>last_claim_age_seconds</code> and <code>problems</code>. <code>queue</code> is <code>null</code> when no <code>--queue</code> is given. The figures are <code>null</code> when there is nothing to measure or the check could not run, as with an unreachable database or an invalid threshold. The object is printed on failure too, before the same non-zero exit.</td>
+</tr>
+<tr>
 <td><code>--max-backlog</code></td>
 <td>off</td>
 <td>Fail when more than this many READY tasks are eligible to run. Deferred tasks do not count.</td>
@@ -1102,12 +1120,17 @@ With no flags, it checks only that the database answers.</p>
 <tr>
 <td><code>--max-age</code></td>
 <td>off</td>
-<td>Fail when the oldest waiting task has waited longer than this many seconds since becoming eligible.</td>
+<td>Fail when a READY task has been eligible to run for longer than this. Accepts <code>7d</code>, <code>24h</code>, <code>90m</code>, <code>45s</code>, or a plain number of seconds.</td>
 </tr>
 <tr>
 <td><code>--worker-timeout</code></td>
 <td>off</td>
-<td>Fail when no worker has claimed a task within this many seconds, or no claim was ever recorded.</td>
+<td>Fail when no worker has claimed a task within this long, or no claim was ever recorded. Accepts <code>7d</code>, <code>24h</code>, <code>90m</code>, <code>45s</code>, or a plain number of seconds.</td>
+</tr>
+<tr>
+<td><code>--database</code></td>
+<td>the alias <code>OxTask</code> writes to</td>
+<td>Database alias to check. The figures come from that alias, so the check reports the queue your workers are running.</td>
 </tr>
 </tbody>
 </table>
@@ -1163,6 +1186,16 @@ job at it:</p>
 <code>Accept: application/openmetrics-text</code> gets the OpenMetrics form of the
 same text, and <code>HEAD</code> is answered for load-balancer checks. Each scrape is
 five aggregate queries over the task table, however many queues there are.</p>
+<p>The scrape reads the alias <code>OxTask</code> is written to, which is the queue your
+workers are running. To keep scrape traffic off that database, name another
+alias where you mount the view:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django_ox.views</span><span class="w"> </span><span class="kn">import</span> <span class="n">metrics</span>
+
+<span class="n">path</span><span class="p">(</span><span class="s2">"ox/metrics"</span><span class="p">,</span> <span class="n">metrics</span><span class="p">,</span> <span class="p">{</span><span class="s2">"using"</span><span class="p">:</span> <span class="s2">"replica"</span><span class="p">})</span>  <span class="c1"># scrape a replica instead</span>
+</code></pre></div>
+<p>A replica that is behind reports the queue as it was, which is the trade.
+The alias comes from the URLconf rather than from the request, so whoever
+scrapes cannot choose the database.</p>
 <p><strong>The endpoint has no authentication of its own.</strong> The numbers are not
 secret, but the queue names and the shape of your traffic are yours to keep,
 so put the route behind the project's policy before it goes near the public
@@ -1201,7 +1234,7 @@ job without code.</p>
 <tr>
 <td><code>django_ox_tasks</code></td>
 <td><code>queue</code>, <code>status</code></td>
-<td>Rows by status, one of <code>ready</code>, <code>running</code>, <code>failed</code>, <code>successful</code>, <code>lost</code>, <code>discarded</code>. The same numbers as <code>queue_stats()</code>, so <code>ready</code> includes deferred tasks.</td>
+<td>Rows by status, one of <code>ready</code>, <code>running</code>, <code>failed</code>, <code>successful</code>, <code>lost</code>, <code>discarded</code>, <code>waiting</code>. The same numbers as <code>queue_stats()</code> and <code>waiting_counts()</code>, so <code>ready</code> includes deferred tasks. A sum over <code>status</code> includes waiting tasks, which aren't backlog.</td>
 </tr>
 <tr>
 <td><code>django_ox_ready_tasks</code></td>
@@ -1211,7 +1244,7 @@ job without code.</p>
 <tr>
 <td><code>django_ox_oldest_ready_age_seconds</code></td>
 <td><code>queue</code></td>
-<td><code>oldest_ready_age()</code> in seconds. Absent when nothing waits.</td>
+<td><code>oldest_ready_age()</code> in seconds. Absent when no READY task is eligible.</td>
 </tr>
 <tr>
 <td><code>django_ox_last_claim_age_seconds</code></td>
@@ -1725,8 +1758,8 @@ and only the reaper takes a lease away.</p>
 </tr>
 <tr>
 <td><code>discard(result_id)</code></td>
-<td>READY, FAILED, LOST</td>
-<td>Marks the row DISCARDED. A READY task that is discarded never runs; a discarded FAILED or LOST task is not retried. The attempt records stay.</td>
+<td>READY, WAITING, FAILED, LOST</td>
+<td>Marks the row DISCARDED. A READY or WAITING task that is discarded never runs; a discarded FAILED or LOST task is not retried. The attempt records stay.</td>
 </tr>
 </tbody>
 </table>
@@ -1734,13 +1767,24 @@ and only the reaper takes a lease away.</p>
 for a queryset or a list of ids. They run one conditional UPDATE per
 thousand rows inside one transaction and return <code>(changed, skipped)</code>. The
 admin actions use them, so a select-across of a hundred thousand rows is a
-hundred statements, and either all of it lands or none does.</p>
+hundred UPDATEs, and either all of it lands or none does.</p>
+<p>They sort the ids first and take the rows in primary key order. On
+PostgreSQL and MySQL each UPDATE follows a locking read of its thousand
+rows, which is one more statement per thousand. <code>ox_prune</code> takes rows in
+the same order. So a bulk retry or discard of rows a prune is deleting
+waits for the prune. Before, it could fail with a deadlock. The call locks
+every row it was given, whatever its status, until it ends. A worker that
+writes to one of those rows waits for it.</p>
+<p>A deadlock is still possible with other writers. After one, a call made
+with no transaction open starts again from its first row. It stops after
+three attempts in all. Called inside a transaction of your own, it doesn't.
+The error reaches you, and your transaction has to start over.</p>
 <p>The actions write the table directly and send no <code>django.tasks</code> signal: a
 discard finishes the result without <code>task_finished</code>, and a retry requeues
 it without <code>task_enqueued</code>.</p>
 <p>Both single-row functions return <code>False</code> for any other state, for an id
 that is not in the table, and for a malformed id. <code>RUNNING</code> and <code>SUCCESSFUL</code> rows are never
-matched. A retry that races a second retry of the same row, or a discard
+matched, and <code>retry</code> never matches a <code>WAITING</code> row. A retry that races a second retry of the same row, or a discard
 that races a worker's claim, resolves to exactly one winner: the UPDATE
 pins the lease number it read, and the loser matches zero rows.</p>
 <p>A retried task is one more attempt, not a fresh set. If the new attempt
@@ -1749,9 +1793,14 @@ again. A task retried while its worker is still missing gets the same
 treatment as any at-least-once task: make the body idempotent.</p>
 <p>DISCARDED is the sixth value in the row's status column and reads as
 <code>FAILED</code> through <code>django.tasks</code>, which has four statuses, so <code>is_finished</code>
-is true and callers waiting on the result return. <code>queue_stats()</code> reports
+is true and a loop polling the result ends. <code>queue_stats()</code> reports
 it in its own <code>discarded</code> column, and <code>ox_prune</code> deletes discarded rows
 with successful ones.</p>
+<p>WAITING is the seventh value. It reads as <code>READY</code> through <code>django.tasks</code>, so
+<code>is_finished</code> is false. There, <code>READY</code> only means the task hasn't finished.
+It doesn't mean a worker can take it now. <code>OxTask.status</code> still says WAITING,
+and <code>waiting_counts()</code> counts it. Workers never claim a waiting task,
+<code>ox_prune</code> never deletes it, and retry skips it.</p>
 <h3 id="the-admin-page">The admin page</h3>
 <p>When <code>django.contrib.admin</code> is installed, django-ox registers the task
 table with it. Nothing is added to a project without the admin. The

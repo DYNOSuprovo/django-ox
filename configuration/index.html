@@ -469,6 +469,34 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#read-replicas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read replicas
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Read replicas">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-things-django-ox-cannot-pin-for-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two things django-ox cannot pin for you
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -932,6 +960,34 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#read-replicas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read replicas
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Read replicas">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-things-django-ox-cannot-pin-for-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two things django-ox cannot pin for you
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1127,6 +1183,11 @@ jitter.</p>
 <td>backend <code>LOCK_TIMEOUT</code>, or 300</td>
 <td>Seconds a RUNNING task's lock may go unrefreshed before the task is reclaimed.</td>
 </tr>
+<tr>
+<td><code>--database</code></td>
+<td>the alias <code>OxTask</code> writes to</td>
+<td>Database alias to run against. Each <code>--processes</code> child is given the same one, so one router answering differently in two processes can't split a fleet across two databases. It is not checked against the router; see <a href="#read-replicas">Read replicas</a>.</td>
+</tr>
 </tbody>
 </table>
 <p>The command also honors Django's standard <code>-v/--verbosity</code>: at the default
@@ -1198,6 +1259,11 @@ page):</p>
 </thead>
 <tbody>
 <tr>
+<td><code>--queue</code></td>
+<td>all queues</td>
+<td>Delete only this queue's task rows, so queues with different retention needs can be pruned separately. Same name and meaning as <code>ox_health --queue</code>. Old schedule ticks are still pruned for every schedule.</td>
+</tr>
+<tr>
 <td><code>--older-than</code></td>
 <td><code>7d</code></td>
 <td>Minimum time since the task finished. Accepts <code>7d</code>, <code>24h</code>, <code>90m</code>, <code>45s</code>, or a plain number of seconds.</td>
@@ -1217,17 +1283,34 @@ page):</p>
 <td>off</td>
 <td>Report how many rows would be deleted without deleting any.</td>
 </tr>
+<tr>
+<td><code>--database</code></td>
+<td>the alias <code>OxTask</code> writes to</td>
+<td>Database alias to prune. The rows it reads and the rows it deletes are on that one alias.</td>
+</tr>
 </tbody>
 </table>
 <p>Only SUCCESSFUL and DISCARDED rows (and, with <code>--include-failed</code>, FAILED and
-LOST rows) whose <code>finished_at</code> is past the cutoff are deleted. READY and RUNNING rows are
-never touched, whatever their age. Rows from the recurring-schedule tick
+LOST rows) whose <code>finished_at</code> is past the cutoff are deleted. READY, WAITING
+and RUNNING rows are never touched, whatever their age. Rows from the
+recurring-schedule tick
 log are pruned with the same cutoff, always keeping each schedule's most
 recent tick; that row anchors missed-tick recovery and deleting it would
 make the schedule re-anchor. The latest tick row of a schedule that has
 been removed from settings is kept by the same rule; such rows are
 harmless and can be deleted by hand if unwanted. See
 <a href="../recurring-tasks/#missed-ticks">Recurring tasks</a>.</p>
+<p><code>--queue</code> narrows the task rows, not the tick log. A run for one queue
+prunes every schedule's old ticks at its own cutoff, so when queues are
+pruned separately, the shortest <code>--older-than</code> decides how much tick
+history stays.</p>
+<p><code>ox_prune</code> deletes task rows one batch at a time, and each batch commits by
+itself. It checks each batch again under a lock before it deletes it, and it
+takes those locks in primary key order. A batch that hits a deadlock or a
+serialization failure runs again in a new transaction, three attempts in all.
+If it still fails, <code>ox_prune</code> stops and exits non-zero. The batches it deleted
+before that stay deleted. Run it again and it deletes the rest. Called inside
+a transaction of your own, it doesn't retry, and the error reaches you.</p>
 <h2 id="ox_health">ox_health</h2>
 <p>A health check for cron alerting and container probes: exits 0 when
 every enabled check passes, non-zero with a one-line reason otherwise.
@@ -1249,6 +1332,11 @@ With no flags it verifies only that the database answers.</p>
 <td>Restrict the checks to one queue.</td>
 </tr>
 <tr>
+<td><code>--format</code></td>
+<td><code>text</code></td>
+<td><code>json</code> prints one object on stdout instead of the <code>OK:</code> line: <code>ok</code>, <code>queue</code>, <code>backlog</code>, <code>oldest_age_seconds</code>, <code>last_claim_age_seconds</code> and <code>problems</code>. <code>queue</code> is <code>null</code> when no <code>--queue</code> is given. The figures are <code>null</code> when there is nothing to measure or the check could not run, as with an unreachable database or an invalid threshold. The object is printed on failure too, before the same non-zero exit.</td>
+</tr>
+<tr>
 <td><code>--max-backlog</code></td>
 <td>off</td>
 <td>Fail when more than this many READY tasks are eligible to run. Tasks deferred to a future <code>run_after</code> do not count.</td>
@@ -1256,12 +1344,17 @@ With no flags it verifies only that the database answers.</p>
 <tr>
 <td><code>--max-age</code></td>
 <td>off</td>
-<td>Fail when the oldest waiting task has waited longer than this many seconds since becoming eligible.</td>
+<td>Fail when a READY task has been eligible to run for longer than this. Accepts <code>7d</code>, <code>24h</code>, <code>90m</code>, <code>45s</code>, or a plain number of seconds.</td>
 </tr>
 <tr>
 <td><code>--worker-timeout</code></td>
 <td>off</td>
-<td>Fail when no worker has claimed a task within this many seconds, or no claim was ever recorded.</td>
+<td>Fail when no worker has claimed a task within this long, or no claim was ever recorded. Accepts <code>7d</code>, <code>24h</code>, <code>90m</code>, <code>45s</code>, or a plain number of seconds.</td>
+</tr>
+<tr>
+<td><code>--database</code></td>
+<td>the alias <code>OxTask</code> writes to</td>
+<td>Database alias to check. The figures come from that alias, so the check reports the queue your workers are running.</td>
 </tr>
 </tbody>
 </table>
@@ -1315,6 +1408,40 @@ alert are on the
 </ul>
 <p>The worker performs the same schedule and timeout validation at startup, so
 a bad deploy fails loudly rather than skipping dispatches.</p>
+<h2 id="read-replicas">Read replicas</h2>
+<p>Under a router that sends reads to a replica, django-ox reads its own rows
+on the alias it writes them to. That covers <code>django_ox.stats</code>, the metrics
+renderings and the endpoint, <code>django_ox.actions</code>, <code>get_result()</code>,
+<code>enqueue()</code> and <code>enqueue_many()</code>, the worker, the reaper, the stored
+schedules, and both admins. A replica is behind by design, and each of
+those reads is a read of something just written.</p>
+<p>The admin has no way out of that. Every page reads the primary, and no
+setting changes it, because the admin writes back what it read. A change
+form submits every field, including the ones nobody edited, so a form
+built from a replica overwrites newer values on the primary. Nothing
+raises and nothing is logged. Expect the admin's read load on the database
+your workers use.</p>
+<p>What you can point at a replica is what you ask for by name. <code>stats</code>,
+<code>collect()</code>, both metrics renderings and the metrics view take <code>using</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="n">path</span><span class="p">(</span><span class="s2">"ox/metrics"</span><span class="p">,</span> <span class="n">metrics</span><span class="p">,</span> <span class="p">{</span><span class="s2">"using"</span><span class="p">:</span> <span class="s2">"replica"</span><span class="p">})</span>  <span class="c1"># scrape a replica</span>
+</code></pre></div>
+<p>A replica that is behind reports the queue as it was, which is the trade.
+Your own queries are untouched: a router you wrote still sends your reads
+of the task table where you send them.</p>
+<h3 id="two-things-django-ox-cannot-pin-for-you">Two things django-ox cannot pin for you</h3>
+<p><strong>Your own <code>ModelAdmin</code> with a foreign key to <code>OxTask</code> or <code>OxSchedule</code>.</strong>
+Django builds that field from <code>db_for_read</code> twice: once for the choices
+the select offers, and again when the model validates what was posted. On
+a lagging replica the select offers no row the replica has not seen.
+Pinning the form field alone does not help: the second check still reads
+the replica. If your project has such a field, have your router
+answer the write alias for django-ox's models. django-ox reads its own
+rows there anyway, so nothing else moves.</p>
+<p><strong><code>ox_worker --database</code>.</strong> The flag is not checked against the router. A
+worker pointed at another alias works on that one alone, while the admin,
+<code>stats</code> and <code>ox_health</code> without the flag read the router's alias.
+<code>django_ox.E008</code> constrains routers, not this flag. Leave it unset unless
+you mean it.</p>
 
 
 

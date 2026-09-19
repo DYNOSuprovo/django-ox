@@ -1343,7 +1343,8 @@ per-entry permission when you pass one.</p>
 <p><code>manage.py ox_import_beat_schedules</code> reads your existing table and prints the
 registry entries and <code>create_schedule</code> calls it would take. It writes nothing:
 retiming production is a decision, so you read the output, edit it and apply it
-yourself.</p>
+yourself. <code>--database</code> names the alias holding the <code>django_celery_beat</code>
+tables, not django-ox's; it defaults to the alias <code>OxSchedule</code> reads from.</p>
 <p>The interval difference is the one to watch. <code>every=timedelta(minutes=90)</code> fires
 at 00:00, 01:30, 03:00 and so on, whatever time you created it. Celery would
 measure ninety minutes from the last run. Use <code>phase</code> to shift the sequence if

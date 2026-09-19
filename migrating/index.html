@@ -939,7 +939,7 @@ already have, so there is no broker to run.</p>
 <tbody>
 <tr>
 <td>Broker URL (Redis, RabbitMQ)</td>
-<td>none. The queue is a table on your default database.</td>
+<td>none. The queue is a table in your own database, your default one unless you route <code>OxTask</code> elsewhere.</td>
 </tr>
 <tr>
 <td><code>celery -A proj worker</code></td>
@@ -975,12 +975,13 @@ already have, so there is no broker to run.</p>
 <code>enqueue</code> leaves your process immediately. If the surrounding transaction then
 rolls back, a worker can pick up an order that no longer exists. The usual fix
 is to wrap every call in <code>transaction.on_commit()</code>.</p>
-<p>Here the enqueue is an <code>INSERT</code> on your own connection. It commits or rolls back
+<p>Here the enqueue is an <code>INSERT</code> on the database that holds <code>OxTask</code>, your
+default one. Open the transaction there and the task commits or rolls back
 with the row it belongs to, so there is nothing to wrap.</p>
 <p>Queues, priorities and <code>run_after</code> map directly. Celery's chains,
 groups and chords, and routing across multiple brokers, are outside the
-package; chains and workflows are on the <a href="../pro/">Oxpull Pro</a> roadmap,
-undated.</p>
+package; workflows are in <a href="../pro/">Oxpull Pro</a>, a paid add-on, and chains
+are on its roadmap, undated.</p>
 <h2 id="from-huey">From huey</h2>
 <p>Closer to django-ox than Celery is, since huey can already store tasks in
 SQLite or Postgres. What changes is the API, and where schedules live.</p>
@@ -1080,9 +1081,10 @@ tasks stay ordinary <code>django.tasks</code> tasks and moving to another backen
 settings change and a drain, run in the same order as above with the roles
 reversed.</p>
 <p>One behaviour does not travel, and it needs deciding on the way in
-rather than on the way out. Enqueueing inside <code>transaction.atomic()</code> ties the
-task to that transaction, so it disappears on rollback. A broker-based backend
-cannot do this: the enqueue leaves your process the moment you call it. Code
+rather than on the way out. Enqueueing inside <code>transaction.atomic()</code> on the
+database that holds <code>OxTask</code> ties the task to that transaction, so it
+disappears on rollback. A broker-based backend cannot do this: the enqueue
+leaves your process the moment you call it. Code
 that depends on a rollback removing a task will behave differently once the
 queue lives in a broker, and it will do so quietly.</p>
 <p>If you want to keep that option open, wrap enqueues in

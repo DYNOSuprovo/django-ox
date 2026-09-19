@@ -934,8 +934,11 @@ a worker process, and one migration. Backups already cover the queue, because
 the queue is a table, and there is no second datastore that can fail on its
 own.</p>
 <h2 id="transactional-enqueue">Transactional enqueue</h2>
-<p>The queue lives in your database, so enqueueing a task is a single INSERT
-on your default connection. That gives you a guarantee a broker cannot offer: <strong>the task and your data commit or roll back together.</strong></p>
+<p>The queue lives in your database, so enqueueing a task is a single INSERT on
+the database that holds <code>OxTask</code>, your default one unless you route it
+elsewhere. Enqueue inside a transaction on that database and you get a
+guarantee a broker cannot offer: <strong>the task and every other row you write
+there commit or roll back together.</strong></p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">transaction</span>
 
 <span class="k">with</span> <span class="n">transaction</span><span class="o">.</span><span class="n">atomic</span><span class="p">():</span>
@@ -949,9 +952,10 @@ the transaction then rolls back, a worker races to process an order that
 does not exist. The standard workaround is wrapping every enqueue in
 <code>transaction.on_commit()</code>, and remembering to, everywhere, forever. With
 django-ox there is nothing to remember: a task enqueued inside
-<code>transaction.atomic()</code> becomes visible to workers only when the
-transaction commits, and disappears on rollback. There is no window where
-business data exists without its task, or a task without its data.</p>
+<code>transaction.atomic()</code> on that database becomes visible to workers only
+when the transaction commits, and disappears on rollback. There is no
+window where business data written there exists without its task, or a
+task without its data.</p>
 <p>Execution is at-least-once. Workers claim tasks atomically (<code>SKIP LOCKED</code>
 on databases that support it, with a single-statement fast path on
 PostgreSQL; an atomic compare-and-set elsewhere, including SQLite),
@@ -1066,7 +1070,7 @@ up the transactional enqueue.</li>
   processes under one supervisor. See
   <a href="production/#threads-and-processes">Production</a>.</li>
 </ul>
-<p>Batches, unique tasks and rate limiting are in <a href="pro/">Oxpull Pro</a>, a paid add-on; <a href="https://oxpull.com/">https://oxpull.com/</a> has the details.
+<p>Batches, unique tasks, rate limiting and workflows are in <a href="pro/">Oxpull Pro</a>, a paid add-on; <a href="https://oxpull.com/">https://oxpull.com/</a> has the details.
 Metrics stay in this package: <code>django_ox.stats</code> and <code>ox_health</code> are free and
 stay free.</p>
 <h2 id="license">License</h2>

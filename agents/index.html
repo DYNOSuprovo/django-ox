@@ -916,9 +916,14 @@ supervisor:</p>
 <li>Tasks run only while <code>ox_worker</code> is running. It is a separate process.</li>
 <li>SIGTERM and SIGINT both drain and exit 0; a second signal forces an
   immediate exit with code 130.</li>
-<li><code>enqueue()</code> is one INSERT on the default connection. Inside
-  <code>transaction.atomic()</code> the task is visible to workers only after commit and
-  is gone on rollback. Do not add <code>transaction.on_commit()</code> around it.</li>
+<li><code>enqueue()</code> is one INSERT on the database the router sends <code>OxTask</code> to,
+  <code>default</code> unless you wrote a router. Two things make the commit joint: a
+  <code>transaction.atomic()</code> opened on that database, because a bare <code>atomic()</code>
+  opens on <code>default</code>; and the caller's own rows written there too. With both,
+  the task and those rows commit or roll back together, and the task is
+  visible to workers only after commit. Do not add <code>transaction.on_commit()</code>
+  around it. Rows written on another connection give two transactions, not
+  one.</li>
 <li>Many calls of one task go through <code>django_ox.bulk.enqueue_many(task,
   [(args, kwargs), ...])</code>: one INSERT per 1,000 rows, one transaction, results
   in input order. Set queue, priority and <code>run_after</code> once with <code>.using(...)</code>.</li>
@@ -969,14 +974,14 @@ supervisor:</p>
   boundary stale. Retiming a stored schedule reschedules it from the moment of
   the change, and re-enabling a paused one does not replay what it missed.</li>
 <li><code>ox_prune --older-than 7d</code> deletes finished rows; FAILED rows stay unless
-  <code>--include-failed</code>. READY and RUNNING rows are never deleted.</li>
+  <code>--include-failed</code>. READY, WAITING and RUNNING rows are never deleted.</li>
 <li><code>path("ox/", include("django_ox.urls"))</code> mounts <code>GET /ox/metrics</code>, the
   queue stats as Prometheus gauges. It has no authentication of its own;
   wrap it with <code>login_required</code> or restrict it by network.</li>
 <li>Run <code>migrate</code> before rolling workers, not from the worker.</li>
 <li><code>django_ox.actions.retry(result_id)</code> requeues a FAILED or LOST task for
   one more attempt. <code>django_ox.actions.discard(result_id)</code> closes a READY,
-  FAILED or LOST task without running it. Neither touches a RUNNING task.
+  WAITING, FAILED or LOST task without running it. Neither touches a RUNNING task.
   With <code>django.contrib.admin</code> installed, the task table appears in the admin
   with the same two actions.</li>
 <li>A particular running task cannot be interrupted on demand; <code>TASK_TIMEOUT</code>
@@ -986,8 +991,8 @@ supervisor:</p>
   <code>django.tasks.backends.immediate.ImmediateBackend</code> or
   <code>django.tasks.backends.dummy.DummyBackend</code> on Django 6.0+, and the same
   paths under <code>django_tasks.backends.</code> on Django 5.2 LTS.</li>
-<li>Batches, unique tasks and rate limiting are in <a href="../pro/">Oxpull Pro</a>, a
-  paid add-on. <code>django_ox.stats</code> and <code>ox_health</code>
+<li>Batches, unique tasks, rate limiting and workflows are in
+  <a href="../pro/">Oxpull Pro</a>, a paid add-on. <code>django_ox.stats</code> and <code>ox_health</code>
   are in django-ox.</li>
 </ul>
 <h2 id="how-to-verify-it-works">How to verify it works</h2>

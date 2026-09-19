@@ -1007,9 +1007,9 @@ broker.</p>
         <span class="n">send_welcome_email</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="n">user</span><span class="o">.</span><span class="n">pk</span><span class="p">)</span>
 </code></pre></div>
 <p>No <code>transaction.on_commit()</code> here. The enqueue is an <code>INSERT</code> on the same
-connection, so the task becomes visible to workers only when the transaction
-commits. If <code>create_user</code> is rolled back further up, the email task disappears
-with it.</p>
+database as the <code>User</code> row, your default one, so the task becomes visible to
+workers only when the transaction commits. If <code>create_user</code> is rolled back
+further up, the email task disappears with it.</p>
 <p>Pass the id, not the object. Arguments are stored as JSON, and a stale copy of a
 model is a bug waiting to happen.</p>
 <h2 id="retry-a-flaky-third-party-call">Retry a flaky third-party call</h2>
@@ -1106,8 +1106,9 @@ queue the backend does not accept, a task bound to another backend, or an
 argument that will not serialise to JSON raises with nothing inserted. The
 rows go in one <code>INSERT</code> per 1,000 (SQLite caps the variables a statement can
 bind) inside one transaction, so a call of 5,000 commits all 5,000 or none,
-and inside your own <code>transaction.atomic()</code> it commits or rolls back with
-the rest of your work, as <code>enqueue()</code> does.</p>
+and inside a <code>transaction.atomic()</code> opened on the database that holds
+<code>OxTask</code> it commits or rolls back with the rest of the work you write there,
+as <code>enqueue()</code> does.</p>
 <p>This is a bulk insert and nothing more. Grouping the
 tasks, reading their progress as one number and firing a callback when the
 last one settles is a <a href="../pro/">batch</a>, in Oxpull Pro.</p>
@@ -1182,10 +1183,10 @@ process.</p>
 <p>Keep django-ox in the settings you use for integration tests, where the point is
 to exercise claiming and retries for real.</p>
 <h2 id="not-in-the-core">Not in the core</h2>
-<p>Batches, unique or deduplicated tasks, and rate limiting are in
+<p>Batches, unique or deduplicated tasks, rate limiting and workflows are in
 <a href="../pro/">Oxpull Pro</a>, a paid add-on. Metrics are in the
 free tier: <code>django_ox.stats</code> and <code>manage.py ox_health</code> ship in the core. Chains
-and workflows are on the Pro roadmap, undated.</p>
+are on the Pro roadmap, undated.</p>
 
 
 
