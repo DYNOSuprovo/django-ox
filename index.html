@@ -14,7 +14,7 @@
       
       
       
-        <link rel="next" href="configuration/">
+        <link rel="next" href="background-tasks/">
       
       
         
@@ -94,7 +94,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#django-ox" class="md-skip">
+        <a href="#django-tasks-in-your-database" class="md-skip">
           Skip to content
         </a>
       
@@ -334,6 +334,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#start-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start here
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#one-fewer-service-to-run" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -425,6 +436,33 @@
   
 </nav>
       
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="background-tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Background tasks, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -552,6 +590,60 @@
     
   
     Migrating
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="why-django-ox/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Why django-ox
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="use-cases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Use cases
   
 
     
@@ -807,6 +899,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#start-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start here
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#one-fewer-service-to-run" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -914,15 +1017,18 @@
   
 
 
-<h1 id="django-ox">django-ox</h1>
-<p>A database-backed worker backend for Django's Tasks framework
-(<code>django.tasks</code>), on Django 5.2 LTS and later.</p>
-<p>Django ships the Tasks API but no production backend: the built-in
-<code>ImmediateBackend</code> runs tasks inline and <code>DummyBackend</code> runs nothing.
-django-ox stores background tasks in the database you already run and executes
-them with a worker process. You get a durable queue with retries, priorities,
-scheduling and a result store, and no broker to provision, secure, upgrade or
-back up.</p>
+<h1 id="django-tasks-in-your-database">Django tasks in your database</h1>
+<p>Stop running Redis to send an email. django-ox runs Django tasks in your existing database. A worker process executes them; if it dies, unfinished tasks return to the queue.</p>
+<p>Enqueue inside <code>transaction.atomic()</code> on the same database as your models, and the task commits or rolls back with your data. Failures retry with exponential backoff. Inspect attempts and tracebacks in Django admin, or edit a recurring schedule without deploying a scheduler.</p>
+<p>Use <code>django.tasks</code> on Django 6.0 or 6.1, or the <code>django-tasks</code> backport on Django 5.2 LTS. Python 3.12+ is required. Execution is at-least-once: write tasks that tolerate repeated execution.</p>
+<p>The step-by-step guide takes you from <code>pip install django-ox</code> to a working queue, a welcome email, and a retry you can watch.</p>
+<h2 id="start-here">Start here</h2>
+<ul>
+<li><a href="background-tasks/">Step-by-step guide</a>: install django-ox and run your first tasks.</li>
+<li><a href="why-django-ox/">Why django-ox</a>: choose a backend for your application.</li>
+<li><a href="benchmarks/">Benchmarks</a>: see the worker-kill tests and queue measurements.</li>
+<li><a href="use-cases/">Use cases</a>: find the setup for the job you need done.</li>
+</ul>
 <h2 id="one-fewer-service-to-run">One fewer service to run</h2>
 <p>A broker-based task queue adds a second datastore to your deployment. Redis or
 RabbitMQ has to be provisioned, monitored, secured and upgraded, and it has to
@@ -1105,13 +1211,13 @@ stay free.</p>
         
         
           
-          <a href="configuration/" class="md-footer__link md-footer__link--next" aria-label="Next: Configuration">
+          <a href="background-tasks/" class="md-footer__link md-footer__link--next" aria-label="Next: Background tasks, step by step">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Configuration
+                Background tasks, step by step
               </div>
             </div>
             <div class="md-footer__button md-icon">

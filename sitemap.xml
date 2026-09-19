@@ -9,6 +9,10 @@
          <lastmod>2026-09-19</lastmod>
     </url>
     <url>
+         <loc>https://oxpull.com/django-ox/background-tasks/</loc>
+         <lastmod>2026-09-19</lastmod>
+    </url>
+    <url>
          <loc>https://oxpull.com/django-ox/benchmarks/</loc>
          <lastmod>2026-09-19</lastmod>
     </url>
@@ -54,6 +58,14 @@
     </url>
     <url>
          <loc>https://oxpull.com/django-ox/stored-schedules/</loc>
+         <lastmod>2026-09-19</lastmod>
+    </url>
+    <url>
+         <loc>https://oxpull.com/django-ox/use-cases/</loc>
+         <lastmod>2026-09-19</lastmod>
+    </url>
+    <url>
+         <loc>https://oxpull.com/django-ox/why-django-ox/</loc>
          <lastmod>2026-09-19</lastmod>
     </url>
 </urlset>

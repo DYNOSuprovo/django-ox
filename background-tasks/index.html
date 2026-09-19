@@ -1,0 +1,1742 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Database-backed worker backend for Django's Tasks framework.">
+      
+      
+      
+        <link rel="canonical" href="https://oxpull.com/django-ox/background-tasks/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../configuration/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Background tasks, step by step - django-ox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/brand.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  
+  
+    
+  
+  
+  
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="django-ox">
+  <meta property="og:title" content="Background tasks, step by step - django-ox">
+  <meta property="og:description" content="Database-backed worker backend for Django's Tasks framework.">
+  <meta property="og:url" content="https://oxpull.com/django-ox/background-tasks/">
+  <meta property="og:image" content="https://oxpull.com/django-ox/assets/social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="django-ox: the production worker for Django Tasks. Your database is the queue.">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Background tasks, step by step - django-ox">
+  <meta name="twitter:description" content="Database-backed worker backend for Django's Tasks framework.">
+  <meta name="twitter:image" content="https://oxpull.com/django-ox/assets/social-card.png">
+
+  <link rel="apple-touch-icon" href="../assets/favicon.png">
+
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#django-background-tasks-step-by-step" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="django-ox" class="md-header__button md-logo" aria-label="django-ox" data-md-component="logo">
+      
+  <img src="../assets/mark-ox.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            django-ox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Background tasks, step by step
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/oxpull/django-ox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="django-ox" class="md-nav__button md-logo" aria-label="django-ox" data-md-component="logo">
+      
+  <img src="../assets/mark-ox.png" alt="logo">
+
+    </a>
+    django-ox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/oxpull/django-ox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Background tasks, step by step
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Background tasks, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-will-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What you will build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-install-django-ox-and-point-the-tasks-framework-at-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Install django-ox and point the Tasks framework at it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-write-your-first-background-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2: Write your first background task
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-enqueue-the-task-from-a-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3: Enqueue the task from a view
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 3: Enqueue the task from a view">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-there-is-no-transactionon_commit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why there is no transaction.on_commit()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-run-the-worker-and-read-its-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 4: Run the worker and read its output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5-see-the-task-in-the-django-admin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 5: See the task in the Django admin
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-6-retries-make-a-task-fail-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 6: Retries: make a task fail once
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-7-add-a-recurring-task-with-no-scheduler-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 7: Add a recurring task, with no scheduler process
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#production-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../recurring-tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recurring tasks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stored-schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules in the database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../patterns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Common patterns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrating
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../why-django-ox/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Why django-ox
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../use-cases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Use cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../choosing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choosing a backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API stability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For AI assistants
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-will-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What you will build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-install-django-ox-and-point-the-tasks-framework-at-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Install django-ox and point the Tasks framework at it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-write-your-first-background-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2: Write your first background task
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-enqueue-the-task-from-a-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3: Enqueue the task from a view
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 3: Enqueue the task from a view">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-there-is-no-transactionon_commit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why there is no transaction.on_commit()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-run-the-worker-and-read-its-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 4: Run the worker and read its output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5-see-the-task-in-the-django-admin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 5: See the task in the Django admin
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-6-retries-make-a-task-fail-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 6: Retries: make a task fail once
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-7-add-a-recurring-task-with-no-scheduler-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 7: Add a recurring task, with no scheduler process
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#production-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="django-background-tasks-step-by-step">Django background tasks, step by step</h1>
+<p>Send a welcome email without running Redis or RabbitMQ. This guide uses django-ox to queue Django tasks in your existing database and run them with a worker. If a worker dies, its unfinished tasks return to the queue.</p>
+<p>You will save a user and enqueue their welcome email inside the same <code>transaction.atomic()</code> block. Both rows commit, or neither does. No task is left behind for a signup that rolled back.</p>
+<p>Every command and output block below was run as written on Django 6.0 with SQLite. The guide calls out the changes for Django 5.2 LTS. django-ox also supports Django 6.1 and requires Python 3.12+.</p>
+<h2 id="what-you-will-build">What you will build</h2>
+<p>A project called <code>myproject</code> with an <code>accounts</code> app. Its <code>register</code> view creates a user and queues their welcome email in one database transaction. A background worker sends the email, printed to its terminal for this walk-through.</p>
+<p>Then you will watch a failed task succeed on retry, schedule a task to run every minute as a stand-in for a nightly report, and inspect the tasks, attempts and tracebacks in Django admin.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>Python 3.12 or later.</li>
+<li>Django 6.0 or later, or Django 5.2 LTS. Django 6.0 and later ship the
+  Tasks framework in core. On Django 5.2 LTS it comes from the
+  <code>django-tasks</code> backport, which the <code>backport</code> extra installs for you.</li>
+<li>SQLite is enough for this walk-through, and it is what a fresh
+  <code>startproject</code> uses. Use PostgreSQL in production; the
+  <a href="../production/#postgresql-mysql-or-sqlite">Production</a> page says why.</li>
+<li>Two terminal windows: one for the web server, one for the worker.</li>
+</ul>
+<p>The two Django versions differ in one import line. On Django 6.0 and later:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+</code></pre></div>
+<p>On Django 5.2 LTS:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django_tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+</code></pre></div>
+<p>django-ox itself handles both, and everything else on this page is the same
+on both versions.</p>
+<h2 id="step-1-install-django-ox-and-point-the-tasks-framework-at-it">Step 1: Install django-ox and point the Tasks framework at it</h2>
+<p>Create a project and an app, or use ones you already have:</p>
+<div class="highlight"><pre><span></span><code>django-admin startproject myproject .
+python manage.py startapp accounts
+</code></pre></div>
+<p>Install the package:</p>
+<div class="highlight"><pre><span></span><code>pip install django-ox
+</code></pre></div>
+<p>On Django 5.2 LTS, install the backport with it:</p>
+<div class="highlight"><pre><span></span><code>pip install "django-ox[backport]"
+</code></pre></div>
+<p>Add the app, name the backend, and route email to the terminal for now:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># myproject/settings.py</span>
+<span class="n">INSTALLED_APPS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="c1"># ...</span>
+    <span class="s2">"django_ox"</span><span class="p">,</span>
+    <span class="s2">"accounts"</span><span class="p">,</span>
+<span class="p">]</span>
+
+<span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1"># Print emails to the terminal instead of sending them.</span>
+<span class="n">EMAIL_BACKEND</span> <span class="o">=</span> <span class="s2">"django.core.mail.backends.console.EmailBackend"</span>
+</code></pre></div>
+<p><code>TASKS</code> is Django's own setting. <code>django_ox</code> provides the backend, the
+worker command and the table the queue lives in. The email backend is for
+this walk-through only: the welcome email will appear in the worker's
+terminal instead of going anywhere.</p>
+<p>Create the tables:</p>
+<div class="highlight"><pre><span></span><code>python manage.py migrate
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>Operations to perform:
+  Apply all migrations: admin, auth, contenttypes, django_ox, sessions
+Running migrations:
+  Applying contenttypes.0001_initial... OK
+  ...
+  Applying django_ox.0001_initial... OK
+  ...
+  Applying sessions.0001_initial... OK
+</code></pre></div>
+<p>In a project that already has its tables, <code>python manage.py migrate
+django_ox</code> creates django-ox's alone.</p>
+<p>Check that django-ox can reach the database:</p>
+<div class="highlight"><pre><span></span><code>python manage.py ox_health
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>OK: backlog=0 oldest_age=none last_claim_age=none
+</code></pre></div>
+<p>No tasks yet, no worker yet. Both numbers will change below.</p>
+<h2 id="step-2-write-your-first-background-task">Step 2: Write your first background task</h2>
+<p>A task is a function with the <code>@task</code> decorator. Put it in a module called
+<code>tasks.py</code> inside the app:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># accounts/tasks.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib.auth.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">User</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.core.mail</span><span class="w"> </span><span class="kn">import</span> <span class="n">send_mail</span>
+
+<span class="c1"># Django 6.0+. On Django 5.2: from django_tasks import task</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+
+
+<span class="nd">@task</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">send_welcome_email</span><span class="p">(</span><span class="n">user_id</span><span class="p">):</span>
+    <span class="n">user</span> <span class="o">=</span> <span class="n">User</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">pk</span><span class="o">=</span><span class="n">user_id</span><span class="p">)</span>
+    <span class="n">send_mail</span><span class="p">(</span>
+        <span class="n">subject</span><span class="o">=</span><span class="s2">"Welcome"</span><span class="p">,</span>
+        <span class="n">message</span><span class="o">=</span><span class="sa">f</span><span class="s2">"Hi </span><span class="si">{</span><span class="n">user</span><span class="o">.</span><span class="n">username</span><span class="si">}</span><span class="s2">, thanks for signing up."</span><span class="p">,</span>
+        <span class="n">from_email</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+        <span class="n">recipient_list</span><span class="o">=</span><span class="p">[</span><span class="n">user</span><span class="o">.</span><span class="n">email</span><span class="p">],</span>
+    <span class="p">)</span>
+</code></pre></div>
+<p>Nothing here comes from django-ox. <code>@task</code> is the Tasks framework, and the
+function is ordinary Django code. Arguments are stored as JSON, so pass the
+user's id rather than the user.</p>
+<p>Try it from the shell before wiring up a view:</p>
+<div class="highlight"><pre><span></span><code>python manage.py shell
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib.auth.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">User</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">accounts.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">send_welcome_email</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">user</span> <span class="o">=</span> <span class="n">User</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">"alice"</span><span class="p">,</span> <span class="s2">"alice@example.com"</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span> <span class="o">=</span> <span class="n">send_welcome_email</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="n">user</span><span class="o">.</span><span class="n">pk</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">status</span>
+<span class="go">TaskResultStatus.READY</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">id</span>
+<span class="go">'9cb98ba6-46e0-46a7-8394-1046fa2ff1fd'</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">is_finished</span>
+<span class="go">False</span>
+</code></pre></div>
+<p><code>enqueue()</code> wrote one row to the queue table and returned a result you can
+look up later by that id. Nothing has run. Tasks run only while a worker is
+running, and you have not started one yet, so the row waits. Leave this
+shell open.</p>
+<h2 id="step-3-enqueue-the-task-from-a-view">Step 3: Enqueue the task from a view</h2>
+<p>The view creates the user and enqueues the email in one transaction:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># accounts/views.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib.auth.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">User</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">transaction</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.http</span><span class="w"> </span><span class="kn">import</span> <span class="n">HttpResponse</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.shortcuts</span><span class="w"> </span><span class="kn">import</span> <span class="n">render</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">send_welcome_email</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">register</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span> <span class="o">!=</span> <span class="s2">"POST"</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">render</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"accounts/register.html"</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">transaction</span><span class="o">.</span><span class="n">atomic</span><span class="p">():</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="n">User</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span>
+            <span class="n">username</span><span class="o">=</span><span class="n">request</span><span class="o">.</span><span class="n">POST</span><span class="p">[</span><span class="s2">"username"</span><span class="p">],</span>
+            <span class="n">email</span><span class="o">=</span><span class="n">request</span><span class="o">.</span><span class="n">POST</span><span class="p">[</span><span class="s2">"email"</span><span class="p">],</span>
+        <span class="p">)</span>
+        <span class="n">send_welcome_email</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="n">user</span><span class="o">.</span><span class="n">pk</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">HttpResponse</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Thanks, </span><span class="si">{</span><span class="n">user</span><span class="o">.</span><span class="n">username</span><span class="si">}</span><span class="s2">. Your welcome email is on its way."</span><span class="p">)</span>
+</code></pre></div>
+<p>The form skips the password field to stay short; a real project would use
+<code>UserCreationForm</code>. Route the view and give it a template:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># accounts/urls.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.urls</span><span class="w"> </span><span class="kn">import</span> <span class="n">path</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">views</span>
+
+<span class="n">urlpatterns</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">path</span><span class="p">(</span><span class="s2">"register/"</span><span class="p">,</span> <span class="n">views</span><span class="o">.</span><span class="n">register</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">"register"</span><span class="p">),</span>
+<span class="p">]</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="c1"># myproject/urls.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib</span><span class="w"> </span><span class="kn">import</span> <span class="n">admin</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.urls</span><span class="w"> </span><span class="kn">import</span> <span class="n">include</span><span class="p">,</span> <span class="n">path</span>
+
+<span class="n">urlpatterns</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">path</span><span class="p">(</span><span class="s2">"admin/"</span><span class="p">,</span> <span class="n">admin</span><span class="o">.</span><span class="n">site</span><span class="o">.</span><span class="n">urls</span><span class="p">),</span>
+    <span class="n">path</span><span class="p">(</span><span class="s2">""</span><span class="p">,</span> <span class="n">include</span><span class="p">(</span><span class="s2">"accounts.urls"</span><span class="p">)),</span>
+<span class="p">]</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="cm">&lt;!-- accounts/templates/accounts/register.html --&gt;</span>
+<span class="p">&lt;</span><span class="nt">form</span> <span class="na">method</span><span class="o">=</span><span class="s">"post"</span><span class="p">&gt;</span>
+  {% csrf_token %}
+  <span class="p">&lt;</span><span class="nt">label</span><span class="p">&gt;</span>Username <span class="p">&lt;</span><span class="nt">input</span> <span class="na">name</span><span class="o">=</span><span class="s">"username"</span> <span class="na">required</span><span class="p">&gt;&lt;/</span><span class="nt">label</span><span class="p">&gt;</span>
+  <span class="p">&lt;</span><span class="nt">label</span><span class="p">&gt;</span>Email <span class="p">&lt;</span><span class="nt">input</span> <span class="na">name</span><span class="o">=</span><span class="s">"email"</span> <span class="na">type</span><span class="o">=</span><span class="s">"email"</span> <span class="na">required</span><span class="p">&gt;&lt;/</span><span class="nt">label</span><span class="p">&gt;</span>
+  <span class="p">&lt;</span><span class="nt">button</span><span class="p">&gt;</span>Sign up<span class="p">&lt;/</span><span class="nt">button</span><span class="p">&gt;</span>
+<span class="p">&lt;/</span><span class="nt">form</span><span class="p">&gt;</span>
+</code></pre></div>
+<p>Start the development server in your first terminal:</p>
+<div class="highlight"><pre><span></span><code>python manage.py runserver
+</code></pre></div>
+<p>Open <a href="http://127.0.0.1:8000/register/">http://127.0.0.1:8000/register/</a>, sign up as <code>bob</code> with the address
+<code>bob@example.com</code>, and submit. The response comes back at once:</p>
+<div class="highlight"><pre><span></span><code>Thanks, bob. Your welcome email is on its way.
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>[19/Sep/2026 07:55:20] "POST /register/ HTTP/1.1" 200 46
+</code></pre></div>
+<p>The request did not send an email. It wrote a user row and a task row and
+returned. The email is the worker's job, and the worker is still not
+running.</p>
+<h3 id="why-there-is-no-transactionon_commit">Why there is no <code>transaction.on_commit()</code></h3>
+<p><code>enqueue()</code> is one INSERT on the database that holds django-ox's table,
+your default database unless you route it elsewhere. Inside
+<code>transaction.atomic()</code> on that database, the task row is part of the same
+transaction as the user row. It becomes visible to workers when the
+transaction commits, and it disappears if the transaction rolls back.</p>
+<p>Watch that happen. In the shell from Step 2:</p>
+<div class="highlight"><pre><span></span><code><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">django.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">transaction</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">django_ox.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">OxTask</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">OxTask</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">count</span><span class="p">()</span>
+<span class="go">2</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="k">try</span><span class="p">:</span>
+<span class="gp">... </span>    <span class="k">with</span> <span class="n">transaction</span><span class="o">.</span><span class="n">atomic</span><span class="p">():</span>
+<span class="gp">... </span>        <span class="n">user</span> <span class="o">=</span> <span class="n">User</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="s2">"carol"</span><span class="p">,</span> <span class="s2">"carol@example.com"</span><span class="p">)</span>
+<span class="gp">... </span>        <span class="n">result</span> <span class="o">=</span> <span class="n">send_welcome_email</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="n">user</span><span class="o">.</span><span class="n">pk</span><span class="p">)</span>
+<span class="gp">... </span>        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"something after the enqueue failed"</span><span class="p">)</span>
+<span class="gp">... </span><span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
+<span class="gp">... </span>    <span class="k">pass</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">User</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">username</span><span class="o">=</span><span class="s2">"carol"</span><span class="p">)</span><span class="o">.</span><span class="n">exists</span><span class="p">()</span>
+<span class="go">False</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">OxTask</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">count</span><span class="p">()</span>
+<span class="go">2</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">send_welcome_email</span><span class="o">.</span><span class="n">get_result</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+<span class="gt">Traceback (most recent call last):</span>
+<span class="w">  </span><span class="c">...</span>
+<span class="gr">django.tasks.exceptions.TaskResultDoesNotExist</span>: <span class="n">7e12477a-3e41-401f-b902-f74545a4d7e7</span>
+</code></pre></div>
+<p>The two rows in the table are alice's task and bob's. Carol's user and
+carol's task were written inside the block and rolled back together, and
+the id <code>enqueue()</code> handed back now refers to nothing. No worker can ever
+pick up a welcome email for a user who does not exist.</p>
+<p>With a queue that lives outside your database, the enqueue leaves your
+process the moment you call it, and code has to wrap every call in
+<code>transaction.on_commit()</code> to close that gap. Here there is nothing to wrap.
+The guarantee covers the rows you write on the same database as the task:
+a bare <code>atomic()</code> opens on <code>default</code>, and <code>default</code> is where django-ox's
+table is unless you wrote a database router.</p>
+<h2 id="step-4-run-the-worker-and-read-its-output">Step 4: Run the worker and read its output</h2>
+<p>Open your second terminal and start a worker:</p>
+<div class="highlight"><pre><span></span><code>python manage.py ox_worker
+</code></pre></div>
+<p>It picks up both waiting tasks straight away:</p>
+<div class="highlight"><pre><span></span><code>2026-09-19 07:55:55,442 INFO django_ox Worker myhost-23168-zYPsu058 starting: queues=['default'] concurrency=1 poll=1.0s schedules=0
+Task id=9cb98ba6-46e0-46a7-8394-1046fa2ff1fd path=accounts.tasks.send_welcome_email state=RUNNING
+Subject: Welcome
+From: webmaster@localhost
+To: alice@example.com
+
+Hi alice, thanks for signing up.
+
+-------------------------------------------------------------------------------
+2026-09-19 07:55:55,467 INFO django_ox Task id=9cb98ba6-46e0-46a7-8394-1046fa2ff1fd path=accounts.tasks.send_welcome_email succeeded in 18ms
+Task id=9cb98ba6-46e0-46a7-8394-1046fa2ff1fd path=accounts.tasks.send_welcome_email state=SUCCESSFUL
+Task id=0c2d708b-47ed-42b1-b72c-9580baed75fc path=accounts.tasks.send_welcome_email state=RUNNING
+Subject: Welcome
+From: webmaster@localhost
+To: bob@example.com
+
+Hi bob, thanks for signing up.
+
+-------------------------------------------------------------------------------
+2026-09-19 07:55:55,471 INFO django_ox Task id=0c2d708b-47ed-42b1-b72c-9580baed75fc path=accounts.tasks.send_welcome_email succeeded in 1ms
+Task id=0c2d708b-47ed-42b1-b72c-9580baed75fc path=accounts.tasks.send_welcome_email state=SUCCESSFUL
+</code></pre></div>
+<p>Reading it line by line:</p>
+<ul>
+<li><code>Worker ... starting</code> names the worker (your hostname, the process id and
+  a random suffix), the queues it serves, how many tasks it runs at once,
+  how often it polls when idle, and how many recurring schedules it
+  dispatches. All four are flags or settings you will meet below.</li>
+<li><code>Task id=... state=RUNNING</code> and <code>state=SUCCESSFUL</code> are Django's own log
+  lines from the Tasks framework. They show because <code>DEBUG = True</code> sends
+  Django's INFO logging to the console.</li>
+<li>The email is <code>send_mail</code> writing to the console backend. The full MIME
+  headers are trimmed here.</li>
+<li><code>succeeded in 18ms</code> is django-ox recording the attempt. A failure logs
+  at WARNING with the exception class, as Step 6 shows.</li>
+</ul>
+<p>The task from the shell ran first, then the one from the form. Back in the
+shell, read the result. If you closed it, look the result up by id:</p>
+<div class="highlight"><pre><span></span><code><span class="gp">&gt;&gt;&gt; </span><span class="n">result</span> <span class="o">=</span> <span class="n">send_welcome_email</span><span class="o">.</span><span class="n">get_result</span><span class="p">(</span><span class="s2">"9cb98ba6-46e0-46a7-8394-1046fa2ff1fd"</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">status</span>
+<span class="go">TaskResultStatus.SUCCESSFUL</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">is_finished</span>
+<span class="go">True</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">return_value</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">attempts</span>
+<span class="go">1</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">errors</span>
+<span class="go">[]</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">finished_at</span>
+<span class="go">datetime.datetime(2026, 9, 19, 7, 55, 55, 466285, tzinfo=datetime.timezone.utc)</span>
+</code></pre></div>
+<p><code>return_value</code> is <code>None</code> because the task returns nothing. A task that
+returns a value stores it as JSON, and <code>refresh()</code> re-reads the row when
+you already hold a result object.</p>
+<p>Stop the worker with Ctrl-C:</p>
+<div class="highlight"><pre><span></span><code>2026-09-19 07:56:28,812 INFO django_ox Worker myhost-23168-zYPsu058 received SIGINT; draining in-flight tasks. Signal again to force exit.
+2026-09-19 07:56:28,813 INFO django_ox Worker myhost-23168-zYPsu058 stopped
+</code></pre></div>
+<p>It stops claiming, finishes whatever is in flight, and exits 0. SIGTERM
+does the same, which is what a process manager sends. A second signal
+forces an immediate exit.</p>
+<p>Two things about the worker to carry forward. It is a separate process:
+tasks run only while one is up. And it does not reload code the way
+<code>runserver</code> does: restart it after you change a task.</p>
+<h2 id="step-5-see-the-task-in-the-django-admin">Step 5: See the task in the Django admin</h2>
+<p>Create an admin user and sign in at <a href="http://127.0.0.1:8000/admin/">http://127.0.0.1:8000/admin/</a>:</p>
+<div class="highlight"><pre><span></span><code>python manage.py createsuperuser
+</code></pre></div>
+<p>Under <strong>django-ox</strong> there are two models: <strong>Ox tasks</strong> and <strong>Ox
+schedules</strong>. Open <strong>Ox tasks</strong>. The change list shows one row per task:</p>
+<table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Task path</th>
+<th>Queue name</th>
+<th>Status</th>
+<th>Attempts</th>
+<th>Enqueued at</th>
+<th>Finished at</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0c2d708b-47ed-42b1-b72c-9580baed75fc</td>
+<td>accounts.tasks.send_welcome_email</td>
+<td>default</td>
+<td>Successful</td>
+<td>1</td>
+<td>Sept. 19, 2026, 7:55 a.m.</td>
+<td>Sept. 19, 2026, 7:55 a.m.</td>
+</tr>
+<tr>
+<td>9cb98ba6-46e0-46a7-8394-1046fa2ff1fd</td>
+<td>accounts.tasks.send_welcome_email</td>
+<td>default</td>
+<td>Successful</td>
+<td>1</td>
+<td>Sept. 19, 2026, 7:54 a.m.</td>
+<td>Sept. 19, 2026, 7:55 a.m.</td>
+</tr>
+</tbody>
+</table>
+<p>The sidebar filters by status and by queue, and the search box takes an id
+or a task path. The action menu holds <strong>Retry selected tasks</strong> and
+<strong>Discard selected tasks</strong>: a retry gives a failed task one more attempt,
+and a discard closes a queued or failed task without running it.</p>
+<p>Click a row for the read-only detail page. It lays out the id, the task
+path, the arguments, the status, the queue and priority, the attempts made
+against the maximum, the ids of every worker that ran it, the return value,
+every failed attempt's traceback, and the timing of enqueue, start and
+finish. The admin never adds, edits or deletes task rows; the two actions
+are the only writes it offers. The
+<a href="../monitoring/#the-admin-page">Monitoring</a> page has the permissions and
+the rest.</p>
+<h2 id="step-6-retries-make-a-task-fail-once">Step 6: Retries: make a task fail once</h2>
+<p>Add a second task that raises on its first attempt and succeeds on the
+next, standing in for a remote system that was down for a moment:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># accounts/tasks.py, below send_welcome_email</span>
+<span class="nd">@task</span><span class="p">(</span><span class="n">takes_context</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">sync_to_crm</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">user_id</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">attempt</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ConnectionError</span><span class="p">(</span><span class="s2">"CRM did not answer"</span><span class="p">)</span>
+    <span class="k">return</span> <span class="sa">f</span><span class="s2">"synced user </span><span class="si">{</span><span class="n">user_id</span><span class="si">}</span><span class="s2"> on attempt </span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">attempt</span><span class="si">}</span><span class="s2">"</span>
+</code></pre></div>
+<p><code>takes_context=True</code> asks the Tasks framework to pass a <code>TaskContext</code> as
+the first argument. Its <code>attempt</code> is the number of the attempt now running.</p>
+<p>Restart the worker in the second terminal, then enqueue the task from the
+shell and read it a couple of seconds later:</p>
+<div class="highlight"><pre><span></span><code><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">accounts.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">sync_to_crm</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span> <span class="o">=</span> <span class="n">sync_to_crm</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">id</span>
+<span class="go">'0f68e1a7-17db-4f6f-87e5-6f05c6b3245e'</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">refresh</span><span class="p">()</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">status</span>
+<span class="go">TaskResultStatus.READY</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">attempts</span>
+<span class="go">1</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">errors</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">exception_class_path</span>
+<span class="go">'builtins.ConnectionError'</span>
+</code></pre></div>
+<p>The first attempt has already failed. The task is <code>READY</code> again, waiting
+for its retry, and the error is recorded. The worker's terminal says the
+same:</p>
+<div class="highlight"><pre><span></span><code>Task id=0f68e1a7-17db-4f6f-87e5-6f05c6b3245e path=accounts.tasks.sync_to_crm state=RUNNING
+2026-09-19 07:58:00,088 WARNING django_ox Task id=0f68e1a7-17db-4f6f-87e5-6f05c6b3245e path=accounts.tasks.sync_to_crm attempt 1/3 failed (ConnectionError); retrying in 5.0s
+</code></pre></div>
+<p>Wait five seconds and read the result again:</p>
+<div class="highlight"><pre><span></span><code><span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">refresh</span><span class="p">()</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">status</span>
+<span class="go">TaskResultStatus.SUCCESSFUL</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">attempts</span>
+<span class="go">2</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">result</span><span class="o">.</span><span class="n">return_value</span>
+<span class="go">'synced user 2 on attempt 2'</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>Task id=0f68e1a7-17db-4f6f-87e5-6f05c6b3245e path=accounts.tasks.sync_to_crm state=RUNNING
+2026-09-19 07:58:05,143 INFO django_ox Task id=0f68e1a7-17db-4f6f-87e5-6f05c6b3245e path=accounts.tasks.sync_to_crm succeeded in 0ms
+Task id=0f68e1a7-17db-4f6f-87e5-6f05c6b3245e path=accounts.tasks.sync_to_crm state=SUCCESSFUL
+</code></pre></div>
+<p>You did nothing to make this happen. A task that raises is retried with
+exponential backoff: three attempts by default, with the delay starting at
+five seconds and doubling each time, up to ten minutes. After the last
+failure the task is <code>FAILED</code> and stays in the table with the traceback of
+every attempt, where the admin's <strong>Retry selected tasks</strong> action can give
+it another go. In the admin, this task's detail page now shows <code>Attempt 1:
+builtins.ConnectionError</code> with its traceback under <strong>Attempt errors</strong>, and
+the return value beside it. <code>MAX_ATTEMPTS</code>, <code>BACKOFF_INITIAL</code> and
+<code>BACKOFF_MAX</code> on the <a href="../configuration/#options">Configuration</a> page tune
+the envelope.</p>
+<p>An attempt is counted when a worker claims the task, so a worker that dies
+mid-task uses one as well; after <code>LOCK_TIMEOUT</code> the reaper hands the task
+to another worker. Execution is at-least-once, so write tasks that are safe
+to run twice. <a href="../patterns/#make-a-task-safe-to-run-twice">Common patterns</a>
+shows the shape, and <a href="../production/#the-reaper">Production</a> has the
+mechanics.</p>
+<h2 id="step-7-add-a-recurring-task-with-no-scheduler-process">Step 7: Add a recurring task, with no scheduler process</h2>
+<p>Add a third task, a stand-in for a nightly report:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># accounts/tasks.py, below sync_to_crm</span>
+<span class="nd">@task</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">signup_report</span><span class="p">():</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">"users"</span><span class="p">:</span> <span class="n">User</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">count</span><span class="p">()}</span>
+</code></pre></div>
+<p>Schedules are declared in settings, in the <code>OPTIONS</code> of the backend they
+enqueue through. This one fires every minute so you can watch it:</p>
+<div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">"SCHEDULES"</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">"signup-report"</span><span class="p">:</span> <span class="p">{</span>
+                    <span class="s2">"task"</span><span class="p">:</span> <span class="s2">"accounts.tasks.signup_report"</span><span class="p">,</span>
+                    <span class="s2">"cron"</span><span class="p">:</span> <span class="s2">"* * * * *"</span><span class="p">,</span>
+                <span class="p">},</span>
+            <span class="p">},</span>
+        <span class="p">},</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>For a nightly report at three in the morning you would write
+<code>"cron": "0 3 * * *"</code>; for a fixed interval, <code>"every": timedelta(hours=1)</code>
+in place of <code>cron</code>. Times are wall-clock in your <code>TIME_ZONE</code>, which is UTC
+in a fresh project.</p>
+<p>A schedule is validated before it can run. <code>manage.py check</code> reports a
+task path that does not import, or an expression that can never fire:</p>
+<div class="highlight"><pre><span></span><code>python manage.py check
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>System check identified no issues (0 silenced).
+</code></pre></div>
+<p>Change the expression to <code>0 0 30 2 *</code>, the 30th of February, and run it
+again:</p>
+<div class="highlight"><pre><span></span><code>SystemCheckError: System check identified some issues:
+
+ERRORS:
+?: (django_ox.E002) Schedule 'signup-report': Cron expression '0 0 30 2 *' can never match: no listed month has any of the listed days.
+    HINT: Fix the SCHEDULES entry of this backend's OPTIONS.
+
+System check identified 1 issue (0 silenced).
+</code></pre></div>
+<p>The worker runs the same validation at startup, so a bad schedule stops a
+deploy rather than skipping in silence. Put <code>* * * * *</code> back and restart
+the worker. The startup line now says <code>schedules=1</code>, and at the next minute
+boundary the schedule fires:</p>
+<div class="highlight"><pre><span></span><code>2026-09-19 07:59:12,044 INFO django_ox Worker myhost-23929-gJ7A6QmA starting: queues=['default'] concurrency=1 poll=1.0s schedules=1
+2026-09-19 08:00:00,399 INFO django_ox Dispatched schedule signup-report tick 2026-09-19T08:00:00+00:00 (task id=fe1388c3-bb4a-4f11-9e21-85449a4d50e0)
+Task id=fe1388c3-bb4a-4f11-9e21-85449a4d50e0 path=accounts.tasks.signup_report state=RUNNING
+2026-09-19 08:00:00,403 INFO django_ox Task id=fe1388c3-bb4a-4f11-9e21-85449a4d50e0 path=accounts.tasks.signup_report succeeded in 0ms
+Task id=fe1388c3-bb4a-4f11-9e21-85449a4d50e0 path=accounts.tasks.signup_report state=SUCCESSFUL
+</code></pre></div>
+<p>There is no scheduler process to start. Every worker dispatches schedules,
+and a unique constraint on the schedule name and the tick time means a due
+tick is enqueued once however many workers you run. Each tick enqueues an
+ordinary task, so retries, the result store and the admin page all apply
+to it. Two rules to know. A new schedule waits for its next tick rather
+than firing for a time before it existed; that is why the worker that
+started at 07:59:12 first fired at 08:00:00. And if every worker is down
+across several ticks, the most recent missed tick fires once on recovery
+and older ones are skipped. The <a href="../recurring-tasks/">Recurring tasks</a> page
+has the cron syntax and the rest of the rules, and
+<a href="../stored-schedules/">Schedules in the database</a> covers schedules edited
+in the admin without a deploy.</p>
+<h2 id="production-notes">Production notes</h2>
+<ul>
+<li>
+<p><strong>Run the worker under a process manager.</strong> It is a foreground process
+  that exits 0 on SIGTERM. The <a href="../production/#running-under-systemd">Production</a>
+  page has a systemd unit and a Compose service. In a container the
+  command is the same one you ran, with the process count and the thread
+  count you want:</p>
+<div class="highlight"><pre><span></span><code>python manage.py ox_worker --processes 2 --concurrency 4
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>2026-09-19 08:00:39,114 INFO django_ox Supervisor 24325 starting 2 worker process(es)
+2026-09-19 08:00:39,299 INFO django_ox Worker myhost-24327-glmGVHgP-0 starting: queues=['default'] concurrency=4 poll=1.0s schedules=1
+2026-09-19 08:00:39,299 INFO django_ox Worker myhost-24328-d7O05mDr-1 starting: queues=['default'] concurrency=4 poll=1.0s schedules=1
+</code></pre></div>
+<p>That is eight tasks at once. <code>--concurrency</code> is a thread pool, which
+suits email, HTTP and ORM work. For CPU-bound tasks run
+<code>--processes N --concurrency 1</code>. A worker process that dies is
+restarted by the supervisor. Give the process manager a stop grace
+period longer than your slowest task, so a drain finishes before it
+escalates to SIGKILL.
+- <strong>Probe with <code>ox_health</code>.</strong> With no flags it checks that the database
+  answers, which is what a container health check should test. With
+  thresholds it turns queue depth and backlog age into an exit code for
+  cron alerting:</p>
+<div class="highlight"><pre><span></span><code>python manage.py ox_health --max-backlog 100 --max-age 300
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>OK: backlog=0 oldest_age=none last_claim_age=37s
+</code></pre></div>
+<p><code>--format json</code> prints the same figures as one object. Which check
+belongs where is on the
+<a href="../monitoring/#health-checks-ox_health">Monitoring</a> page, with the
+Prometheus endpoint and the log events.
+- <strong>Prune on a timer.</strong> Finished rows stay in the table until you delete
+  them, because the table is also the result store. Run <code>ox_prune</code> daily
+  from cron or a systemd timer, with a retention that suits you. <code>--dry-run</code>
+  reports what a cutoff would remove; on this demo database, whose rows
+  are minutes old:</p>
+<div class="highlight"><pre><span></span><code>python manage.py ox_prune --older-than 60s --dry-run
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>Would delete 2 SUCCESSFUL/DISCARDED task row(s) finished before 2026-09-19T07:57:42.805703+00:00.
+Would delete 0 schedule tick row(s) scheduled before 2026-09-19T07:57:42.805703+00:00.
+</code></pre></div>
+<p>Failed tasks are kept until you pass <code>--include-failed</code>, so their
+tracebacks survive until someone has read them. The
+<a href="../production/#pruning-on-a-timer">timer unit</a> is on the Production page.
+- <strong>Use PostgreSQL.</strong> SQLite is right for development and for a
+  single-host deployment with one worker and threads. PostgreSQL and MySQL
+  8 take a <code>SKIP LOCKED</code> claim path built for many workers. See
+  <a href="../production/#postgresql-mysql-or-sqlite">PostgreSQL, MySQL or SQLite</a>.
+- <strong>On a read replica</strong>, django-ox reads its own rows on the database it
+  writes them to, so a lagging replica never hides a task from the worker,
+  the result API or <code>ox_health</code>. The admin reads the primary too.
+  <code>ox_worker</code>, <code>ox_prune</code> and <code>ox_health</code> take <code>--database</code> to name the
+  alias they work on; leave it unset unless you mean it. Details under
+  <a href="../configuration/#read-replicas">Read replicas</a>.
+- <strong>Run <code>migrate</code> before rolling workers</strong>, as a deploy step or an init
+  container, not from the worker itself.</p>
+</li>
+</ul>
+<h2 id="next-steps">Next steps</h2>
+<ul>
+<li><a href="../configuration/">Configuration</a>: the <code>TASKS</code> entry, every <code>OPTIONS</code>
+  key, and the flags of <code>ox_worker</code>, <code>ox_prune</code> and <code>ox_health</code>.</li>
+<li><a href="../recurring-tasks/">Recurring tasks</a>: cron syntax, fixed intervals,
+  missed ticks and time zones. <a href="../stored-schedules/">Schedules in the database</a>
+  for rows edited in the admin.</li>
+<li><a href="../patterns/">Common patterns</a>: named queues and priorities, deferring
+  work with <code>run_after</code>, enqueuing many tasks at once, and
+  <a href="../patterns/#test-without-a-worker">testing without a worker</a>.</li>
+<li><a href="../production/">Production</a>: systemd, containers, graceful shutdown,
+  scaling out, the lease and the reaper.</li>
+<li><a href="../monitoring/">Monitoring</a>: the stats API, <code>ox_health</code>, Prometheus, log
+  events, retry and discard.</li>
+<li><a href="../migrating/">Migrating</a>: from <a href="../migrating/#from-celery">Celery</a>, from
+  <a href="../migrating/#from-another-djangotasks-backend">django-tasks-db</a>, from
+  huey, and the switch-over order.</li>
+<li><a href="../choosing/">Choosing a task backend</a>: how django-ox compares with the
+  other backends a Django team shortlists, and when not to use it.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href=".." class="md-footer__link md-footer__link--prev" aria-label="Previous: Home">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Home
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../configuration/" class="md-footer__link md-footer__link--next" aria-label="Next: Configuration">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Configuration
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "navigation.footer"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

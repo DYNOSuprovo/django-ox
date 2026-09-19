@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://oxpull.com/django-ox/choosing/">
       
       
-        <link rel="prev" href="../migrating/">
+        <link rel="prev" href="../use-cases/">
       
       
         <link rel="next" href="../production/">
@@ -305,6 +305,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../background-tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Background tasks, step by step
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../configuration/" class="md-nav__link">
         
   
@@ -437,6 +464,60 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../why-django-ox/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Why django-ox
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../use-cases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Use cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -504,6 +585,17 @@
     <span class="md-ellipsis">
       
         The table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-database-backed-djangotasks-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The database-backed django.tasks backends
       
     </span>
   </a>
@@ -767,6 +859,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-database-backed-djangotasks-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The database-backed django.tasks backends
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#when-not-to-use-django-ox" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -811,7 +914,9 @@
 <h1 id="choosing-a-task-backend">Choosing a task backend</h1>
 <p>This page compares django-ox with the task queues a Django team is most likely
 to shortlist: django-tasks-db, huey, Celery, django-q2, dramatiq and
-procrastinate. Every cell about another project comes from that project's own
+procrastinate, and, in a second table, with the other database-backed
+<code>django.tasks</code> backends: steady-queue, dj-queue and django-database-task.
+Every cell about another project comes from that project's own
 documentation, source or issue tracker, with the link in the footnotes and the
 date it was read. Where a project's pages do not say, the cell says so rather
 than guessing.</p>
@@ -837,7 +942,7 @@ fewer service. The last section says where django-ox is not the right fit.</p>
 <td><code>django.tasks</code> backend</td>
 <td>Yes, native</td>
 <td>Yes, native <sup id="fnref:tdb-readme"><a class="footnote-ref" href="#fn:tdb-readme">1</a></sup></td>
-<td>No. Issue #870 closed 2025-11-14 <sup id="fnref:huey-870"><a class="footnote-ref" href="#fn:huey-870">9</a></sup></td>
+<td>Yes. <code>huey.contrib.djhuey</code> ships "a backend for the django.tasks framework (Django 6.0 and newer, or older Djangos using the django-tasks backport)" <sup id="fnref:huey-contrib"><a class="footnote-ref" href="#fn:huey-contrib">9</a></sup></td>
 <td>No. Issue #10062 closed 2026-02-03 <sup id="fnref:celery-10062"><a class="footnote-ref" href="#fn:celery-10062">19</a></sup></td>
 <td>Pull request #315 open since 2026-02-04, last updated 2026-05-15 <sup id="fnref:q2-315"><a class="footnote-ref" href="#fn:q2-315">27</a></sup></td>
 <td>Not documented <sup id="fnref:dq-guide"><a class="footnote-ref" href="#fn:dq-guide">30</a></sup></td>
@@ -925,7 +1030,7 @@ fewer service. The last section says where django-ox is not the right fit.</p>
 </tr>
 <tr>
 <td>Databases</td>
-<td>PostgreSQL, SQLite and MySQL 8 tested in CI; MariaDB 10.6+ outside the CI matrix</td>
+<td>PostgreSQL, MySQL 8 and SQLite, all run in CI; MariaDB 10.6+ takes the same claim path as MySQL and is not in CI</td>
 <td>Any Django database <sup id="fnref6:tdb-readme"><a class="footnote-ref" href="#fn:tdb-readme">1</a></sup></td>
 <td>Redis, SQLite, PostgreSQL, file, memory <sup id="fnref9:huey-guide"><a class="footnote-ref" href="#fn:huey-guide">8</a></sup></td>
 <td>Broker, not a database <sup id="fnref2:celery-brokers"><a class="footnote-ref" href="#fn:celery-brokers">12</a></sup></td>
@@ -948,6 +1053,116 @@ fewer service. The last section says where django-ox is not the right fit.</p>
 <p>Async tasks: django-ox sets <code>supports_async_task</code>, so <code>async def</code> tasks
 enqueue and run. Celery's most-upvoted open issue is #6552, "Support async
 function", open since 2020-12-19 with 98 upvotes <sup id="fnref:celery-6552"><a class="footnote-ref" href="#fn:celery-6552">18</a></sup>.</p>
+<h2 id="the-database-backed-djangotasks-backends">The database-backed <code>django.tasks</code> backends</h2>
+<p>steady-queue, dj-queue and django-database-task also keep the queue in the
+database and implement the <code>django.tasks</code> backend API. The same rules apply:
+every cell about another project comes from its README or its PyPI page, with
+the link and the date in the footnotes, and a cell says "not stated" when
+those pages do not say.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>django-ox</th>
+<th>steady-queue</th>
+<th>dj-queue</th>
+<th>django-database-task</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Latest release on PyPI</td>
+<td>See the <a href="../changelog/">changelog</a></td>
+<td>0.2.1, 2026-09-06 <sup id="fnref:sq-pypi"><a class="footnote-ref" href="#fn:sq-pypi">40</a></sup></td>
+<td>0.14.1, 2026-09-03 <sup id="fnref:djq-pypi"><a class="footnote-ref" href="#fn:djq-pypi">42</a></sup></td>
+<td>0.5.0, 2026-09-05 <sup id="fnref:ddt-pypi"><a class="footnote-ref" href="#fn:ddt-pypi">44</a></sup></td>
+</tr>
+<tr>
+<td><code>django.tasks</code> backend</td>
+<td>Yes, native</td>
+<td>Yes, native <sup id="fnref:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td>Yes, native <sup id="fnref:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>Yes, native <sup id="fnref:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Django versions</td>
+<td>5.2 LTS with the <code>django-tasks</code> backport, 6.0 and 6.1</td>
+<td>6.0 and later, below 7 (<code>django&gt;=6.0,&lt;7</code>) <sup id="fnref2:sq-pypi"><a class="footnote-ref" href="#fn:sq-pypi">40</a></sup></td>
+<td>6.0 and 6.1 (<code>django&gt;=6.0.0,&lt;6.2</code>) <sup id="fnref2:djq-pypi"><a class="footnote-ref" href="#fn:djq-pypi">42</a></sup></td>
+<td>6.0 and later (<code>Django&gt;=6.0</code>) <sup id="fnref2:ddt-pypi"><a class="footnote-ref" href="#fn:ddt-pypi">44</a></sup></td>
+</tr>
+<tr>
+<td>Databases</td>
+<td>PostgreSQL, MySQL 8 and SQLite, all run in CI; MariaDB 10.6+ takes the same claim path as MySQL and is not in CI</td>
+<td>MySQL, PostgreSQL or SQLite; <code>FOR UPDATE SKIP LOCKED</code> on MySQL 8+ and PostgreSQL 9.5+ <sup id="fnref2:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td>PostgreSQL first-class, with optional <code>LISTEN/NOTIFY</code>; MySQL and MariaDB supported; SQLite "supported with limits", polling only and no <code>SKIP LOCKED</code> <sup id="fnref2:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>PostgreSQL 14+, MySQL 8.0.11+, MariaDB 10.6+, SQLite (no row-level locking; "development or single-worker deployments"), Oracle 19c+ ("not tested with this package") <sup id="fnref2:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Transactional enqueue</td>
+<td>Yes. Enqueue is one INSERT on your default database; a task written inside <code>atomic()</code> commits or rolls back with the rows beside it</td>
+<td>The README says a shared database gives transactional integrity and recommends against relying on it: a separate database for the queue, and <code>transaction.on_commit</code> for tasks that depend on data <sup id="fnref3:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td>"<code>enqueue()</code> writes immediately and returns a real persisted task result ID"; for a task that depends on rows in the current transaction the README provides <code>enqueue_on_commit()</code> or <code>transaction.on_commit()</code> <sup id="fnref3:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>Not stated as a feature. The PostgreSQL broker section says <code>pg_notify()</code> runs inside the same transaction as the INSERT and is delivered on commit <sup id="fnref3:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Retries and backoff</td>
+<td>Exponential backoff, <code>MAX_ATTEMPTS</code>, <code>BACKOFF_INITIAL</code>, <code>BACKOFF_MAX</code>; every attempt's traceback kept</td>
+<td>Not stated in the README or the configuration page; failed tasks are retried from the Django admin <sup id="fnref4:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup> <sup id="fnref:sq-config"><a class="footnote-ref" href="#fn:sq-config">39</a></sup></td>
+<td>None built in: "<code>dj_queue</code> does not add an automatic retry policy or backoff engine". Failed jobs are retried from the admin or with <code>retry_failed_job()</code> <sup id="fnref4:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>No automatic retry stated. A FAILED task is re-run from the admin action "Retry failed tasks" or with <code>run_task_by_id(..., allow_retry=True)</code> <sup id="fnref4:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Recurring schedules</td>
+<td>Cron or a fixed interval in settings, or rows edited in the Django admin; every worker dispatches, no scheduler process</td>
+<td>Cron-style, with the <code>@recurring</code> decorator in code; a scheduler process under the supervisor <sup id="fnref5:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td>Static recurring tasks in <code>OPTIONS["recurring"]</code> and dynamic recurring tasks managed at runtime; a scheduler under the supervisor <sup id="fnref5:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>None built in. The worker is run from cron, a systemd timer, JP1, Hinemos or Cloud Scheduler <sup id="fnref5:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Priorities</td>
+<td>-100 to 100</td>
+<td>-100 to 100 <sup id="fnref6:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td><code>priority</code> on the task call; higher claimed first within a queue <sup id="fnref6:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>-100 to 100 <sup id="fnref6:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Concurrency controls</td>
+<td>None in django-ox, and none in <a href="../pro/">Oxpull Pro</a>: Pro's rate limiting caps how often a task starts, not how many run at once</td>
+<td>"Limit how many instances of a specific task can run simultaneously" <sup id="fnref7:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td><code>@concurrency</code> decorator with database-backed limits; semaphores shown in the admin dashboard <sup id="fnref7:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>Not stated <sup id="fnref7:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Worker dies mid-task</td>
+<td>Lease renewed every <code>LOCK_TIMEOUT / 3</code>; a task whose lease goes stale for <code>LOCK_TIMEOUT</code> is put back to READY, or marked LOST when attempts are spent</td>
+<td>Marked failed with <code>ProcessPrunedError</code> (heartbeat expired) or <code>ProcessExitError</code> (killed), to be inspected <sup id="fnref8:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td>Kept "as failed work that operators can inspect and retry": <code>ProcessExitError</code>, <code>ProcessPrunedError</code>, <code>ProcessMissingError</code> <sup id="fnref8:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>Requeued by <code>requeue_stale_database_tasks --older-than</code>, a separate command run from cron or a systemd timer; <code>--max-attempts</code> (default 3) marks the task FAILED instead <sup id="fnref8:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Health and metrics</td>
+<td><code>ox_health</code> command, <code>django_ox.stats</code>, a Prometheus endpoint (<code>/ox/metrics</code>), structured log events, admin retry and discard</td>
+<td>Django admin: pause and resume queues, inspect tasks, retry or discard failed ones; operational signals from <code>steady_queue.signals</code> <sup id="fnref9:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td>Admin dashboard at <code>/admin/dj_queue/dashboard/</code>; <code>dj_queue_health</code> command; <code>/dj_queue/metrics</code> in Prometheus text format with the <code>prometheus</code> extra <sup id="fnref9:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>Django admin; structured log fields; opt-in worker exit codes for job schedulers <sup id="fnref9:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Async tasks and results</td>
+<td><code>async def</code> tasks run; <code>get_result()</code> supported</td>
+<td>"Async task enqueueing is not supported"; "Result fetching is not supported" <sup id="fnref10:sq-readme"><a class="footnote-ref" href="#fn:sq-readme">38</a></sup></td>
+<td><code>get_result()</code> documented; async task functions not stated <sup id="fnref10:djq-readme"><a class="footnote-ref" href="#fn:djq-readme">41</a></sup></td>
+<td>"Supports async task functions"; <code>get_result()</code> documented <sup id="fnref10:ddt-readme"><a class="footnote-ref" href="#fn:ddt-readme">43</a></sup></td>
+</tr>
+<tr>
+<td>Licence</td>
+<td>BSD 3-Clause</td>
+<td>MIT <sup id="fnref3:sq-pypi"><a class="footnote-ref" href="#fn:sq-pypi">40</a></sup></td>
+<td>MIT <sup id="fnref3:djq-pypi"><a class="footnote-ref" href="#fn:djq-pypi">42</a></sup></td>
+<td>MIT <sup id="fnref3:ddt-pypi"><a class="footnote-ref" href="#fn:ddt-pypi">44</a></sup></td>
+</tr>
+</tbody>
+</table>
 <h2 id="when-not-to-use-django-ox">When not to use django-ox</h2>
 <ul>
 <li><strong>You need to stop one chosen task while it runs.</strong> django-ox bounds every
@@ -999,8 +1214,8 @@ of date, open an issue with the link that shows it.</p>
 <li id="fn:huey-guide">
 <p>https://huey.readthedocs.io/en/latest/guide.html, checked 2026-08-23.&#160;<a class="footnote-backref" href="#fnref:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref2:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref3:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref4:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref5:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref6:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref7:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref8:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a><a class="footnote-backref" href="#fnref9:huey-guide" title="Jump back to footnote 8 in the text">&#8617;</a></p>
 </li>
-<li id="fn:huey-870">
-<p>https://github.com/coleifer/huey/issues/870, closed, checked 2026-08-23.&#160;<a class="footnote-backref" href="#fnref:huey-870" title="Jump back to footnote 9 in the text">&#8617;</a></p>
+<li id="fn:huey-contrib">
+<p>https://huey.readthedocs.io/en/latest/contrib.html, checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:huey-contrib" title="Jump back to footnote 9 in the text">&#8617;</a></p>
 </li>
 <li id="fn:huey-repo">
 <p>https://github.com/coleifer/huey, licence field, checked 2026-08-23.&#160;<a class="footnote-backref" href="#fnref:huey-repo" title="Jump back to footnote 10 in the text">&#8617;</a></p>
@@ -1086,6 +1301,27 @@ of date, open an issue with the link that shows it.</p>
 <li id="fn:proc-repo">
 <p>https://github.com/procrastinate-org/procrastinate, licence field, checked 2026-08-23.&#160;<a class="footnote-backref" href="#fnref:proc-repo" title="Jump back to footnote 37 in the text">&#8617;</a></p>
 </li>
+<li id="fn:sq-readme">
+<p>https://github.com/knifecake/steady-queue README, checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref2:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref3:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref4:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref5:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref6:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref7:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref8:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref9:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a><a class="footnote-backref" href="#fnref10:sq-readme" title="Jump back to footnote 38 in the text">&#8617;</a></p>
+</li>
+<li id="fn:sq-config">
+<p>https://steady-queue.readthedocs.io/en/latest/configuration.html, checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:sq-config" title="Jump back to footnote 39 in the text">&#8617;</a></p>
+</li>
+<li id="fn:sq-pypi">
+<p>https://pypi.org/project/steady-queue/ 0.2.1, uploaded 2026-09-06; <code>Requires-Dist: django&lt;7,&gt;=6.0</code>; licence MIT. Checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:sq-pypi" title="Jump back to footnote 40 in the text">&#8617;</a><a class="footnote-backref" href="#fnref2:sq-pypi" title="Jump back to footnote 40 in the text">&#8617;</a><a class="footnote-backref" href="#fnref3:sq-pypi" title="Jump back to footnote 40 in the text">&#8617;</a></p>
+</li>
+<li id="fn:djq-readme">
+<p>https://github.com/coriocactus/dj_queue README, checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref2:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref3:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref4:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref5:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref6:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref7:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref8:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref9:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a><a class="footnote-backref" href="#fnref10:djq-readme" title="Jump back to footnote 41 in the text">&#8617;</a></p>
+</li>
+<li id="fn:djq-pypi">
+<p>https://pypi.org/project/dj-queue/ 0.14.1, uploaded 2026-09-03; <code>Requires-Dist: django&lt;6.2,&gt;=6.0.0</code>; licence MIT. Checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:djq-pypi" title="Jump back to footnote 42 in the text">&#8617;</a><a class="footnote-backref" href="#fnref2:djq-pypi" title="Jump back to footnote 42 in the text">&#8617;</a><a class="footnote-backref" href="#fnref3:djq-pypi" title="Jump back to footnote 42 in the text">&#8617;</a></p>
+</li>
+<li id="fn:ddt-readme">
+<p>https://github.com/tokibito/django-database-task README, checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref2:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref3:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref4:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref5:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref6:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref7:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref8:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref9:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a><a class="footnote-backref" href="#fnref10:ddt-readme" title="Jump back to footnote 43 in the text">&#8617;</a></p>
+</li>
+<li id="fn:ddt-pypi">
+<p>https://pypi.org/project/django-database-task/ 0.5.0, uploaded 2026-09-05; <code>Requires-Dist: Django&gt;=6.0</code>; licence MIT. Checked 2026-09-19.&#160;<a class="footnote-backref" href="#fnref:ddt-pypi" title="Jump back to footnote 44 in the text">&#8617;</a><a class="footnote-backref" href="#fnref2:ddt-pypi" title="Jump back to footnote 44 in the text">&#8617;</a><a class="footnote-backref" href="#fnref3:ddt-pypi" title="Jump back to footnote 44 in the text">&#8617;</a></p>
+</li>
 </ol>
 </div>
 
@@ -1117,7 +1353,7 @@ of date, open an issue with the link that shows it.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../migrating/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Migrating">
+          <a href="../use-cases/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Use cases">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -1127,7 +1363,7 @@ of date, open an issue with the link that shows it.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                Migrating
+                Use cases
               </div>
             </div>
           </a>

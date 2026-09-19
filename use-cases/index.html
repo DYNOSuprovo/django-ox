@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://oxpull.com/django-ox/stability/">
+        <link rel="canonical" href="https://oxpull.com/django-ox/use-cases/">
       
       
-        <link rel="prev" href="../benchmarks/">
+        <link rel="prev" href="../why-django-ox/">
       
       
-        <link rel="next" href="../pro/">
+        <link rel="next" href="../choosing/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>API stability - django-ox</title>
+        <title>Use cases - django-ox</title>
       
     
     
@@ -64,16 +64,16 @@
 
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="django-ox">
-  <meta property="og:title" content="API stability - django-ox">
+  <meta property="og:title" content="Use cases - django-ox">
   <meta property="og:description" content="Database-backed worker backend for Django's Tasks framework.">
-  <meta property="og:url" content="https://oxpull.com/django-ox/stability/">
+  <meta property="og:url" content="https://oxpull.com/django-ox/use-cases/">
   <meta property="og:image" content="https://oxpull.com/django-ox/assets/social-card.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="django-ox: the production worker for Django Tasks. Your database is the queue.">
 
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="API stability - django-ox">
+  <meta name="twitter:title" content="Use cases - django-ox">
   <meta name="twitter:description" content="Database-backed worker backend for Django's Tasks framework.">
   <meta name="twitter:image" content="https://oxpull.com/django-ox/assets/social-card.png">
 
@@ -98,7 +98,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#api-stability" class="md-skip">
+        <a href="#django-tasks-without-another-datastore" class="md-skip">
           Skip to content
         </a>
       
@@ -133,7 +133,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              API stability
+              Use cases
             
           </span>
         </div>
@@ -491,10 +491,37 @@
       
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../use-cases/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Use cases
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -510,6 +537,92 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#recover-tasks-left-running-after-a-worker-dies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recover tasks left RUNNING after a worker dies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-django-background-jobs-without-redis-or-rabbitmq" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run Django background jobs without Redis or RabbitMQ
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#enqueue-a-task-inside-transactionatomic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enqueue a task inside transaction.atomic()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-recurring-django-tasks-without-a-scheduler-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run recurring Django tasks without a scheduler process
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deduplicate-a-repeated-webhook-with-oxpull-pro" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deduplicate a repeated webhook with Oxpull Pro
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-choose-another-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to choose another tool
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -626,37 +739,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    API stability
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../stability/" class="md-nav__link">
         
   
   
@@ -672,87 +758,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#public-api" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Public API
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Public API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#not-public" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Not public
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#versioning" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Versioning
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#deprecation-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Deprecation policy
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#supported-python-and-django" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Supported Python and Django
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -865,38 +870,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#public-api" class="md-nav__link">
+  <a href="#recover-tasks-left-running-after-a-worker-dies" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Public API
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Public API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#not-public" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Not public
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#versioning" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Versioning
+        Recover tasks left RUNNING after a worker dies
       
     </span>
   </a>
@@ -904,10 +881,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#deprecation-policy" class="md-nav__link">
+  <a href="#run-django-background-jobs-without-redis-or-rabbitmq" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Deprecation policy
+        Run Django background jobs without Redis or RabbitMQ
       
     </span>
   </a>
@@ -915,10 +892,43 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#supported-python-and-django" class="md-nav__link">
+  <a href="#enqueue-a-task-inside-transactionatomic" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Supported Python and Django
+        Enqueue a task inside transaction.atomic()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-recurring-django-tasks-without-a-scheduler-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run recurring Django tasks without a scheduler process
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deduplicate-a-repeated-webhook-with-oxpull-pro" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deduplicate a repeated webhook with Oxpull Pro
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-choose-another-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to choose another tool
       
     </span>
   </a>
@@ -945,200 +955,104 @@
   
 
 
-<h1 id="api-stability">API stability</h1>
-<p>This page states what counts as django-ox's public API, how versions
-change, and which Python and Django versions are supported. It is a
-promise about compatibility, so you can pin <code>django-ox</code> with confidence.</p>
-<h2 id="public-api">Public API</h2>
-<p>These are the supported surfaces. Changes to them are versioned and
-announced in the <a href="../changelog/">changelog</a>. This page, not a module's
-<code>__all__</code>, is the statement of what is public. A module's <code>__all__</code> may
-export names this page does not list; those names are not public.</p>
-<ul>
-<li><strong>The backend path</strong> <code>django_ox.backend.OxBackend</code>, referenced as a
-  string in the <code>TASKS</code> setting, <code>QUEUES</code> beside <code>OPTIONS</code>, and every
-  <code>OPTIONS</code> key it reads: <code>MAX_ATTEMPTS</code>, <code>LOCK_TIMEOUT</code>,
-  <code>BACKOFF_INITIAL</code>, <code>BACKOFF_MAX</code>, <code>TASK_TIMEOUT</code>, <code>TASK_TIMEOUTS</code>,
-  <code>TASK_TIMEOUT_GRACE</code>, <code>SCHEDULES</code> (with its documented per-schedule
-  keys), and <code>WORKER_CLASS</code>, the dotted path of the <code>Worker</code> subclass
-  <code>ox_worker</code> runs.</li>
-<li><strong>The management commands</strong> and their flags: <code>ox_worker</code>, <code>ox_prune</code>,
-  <code>ox_health</code>. <code>ox_worker</code>'s exit codes: 0 after a drain, 130 on a forced
-  exit, 75 when the worker recycles itself after a stuck task thread.
-  Under <code>--processes</code>, the supervisor exits 0 when every worker drained
-  or recycled, 1 when a slot hit the restart cap, and otherwise with the
-  first other non-zero worker code. A worker killed by a signal reports
-  <code>128 + the signal number</code>, following the shell convention.</li>
-<li><strong>The system check IDs</strong>, the <code>django_ox.E0xx</code> identifiers, which
-  you may list in <code>SILENCED_SYSTEM_CHECKS</code>. The
-  IDs are stable; the messages are not.</li>
-<li><strong><code>ox_health</code>'s exit codes</strong>: 0 when healthy, 1 when unhealthy. A value
-  the command itself rejects exits 1 as well, such as <code>--max-age 0</code> or a
-  <code>--database</code> alias that isn't in <code>DATABASES</code>. A value argparse rejects
-  exits 2, such as <code>--max-age nonsense</code> or <code>--format bogus</code>, and so does an
-  unknown flag.</li>
-<li><strong>The claim filter hooks</strong> <code>Worker.claim_filter_q()</code> and
-  <code>Worker.claim_filter_sql()</code>, and where their result is applied: the
-  fragment is conjoined to the conditions the candidate select filters on,
-  ahead of its ordering and its limit. The statement around it is not
-  promised.</li>
-<li><strong>The timeout helpers</strong> <code>django_ox.deadline()</code> and <code>django_ox.remaining()</code>,
-  callable from inside a task. <code>deadline()</code> answers with a wall-clock time, and
-  <code>remaining()</code> with seconds measured on the same monotonic clock the worker
-  enforces the deadline with, so the two can differ by the size of a clock
-  correction. <code>remaining()</code> is the one the watchdog agrees with.</li>
-<li><strong>The metrics module</strong> <code>django_ox.stats</code>: <code>queue_stats</code>, <code>ready_count</code>,
-  <code>oldest_ready_age</code>, <code>throughput</code>, <code>failure_rate</code>, <code>last_claim_age</code>,
-  <code>waiting_counts</code>, the <code>QueueStats</code> dataclass, and <code>DEFAULT_WINDOW</code>, the
-  trailing window the rate functions default to.</li>
-<li><strong>The Prometheus surface</strong>: <code>django_ox.metrics.render_prometheus</code>,
-  <code>render_openmetrics</code> and <code>collector</code>, the view <code>django_ox.views.metrics</code>
-  with the <code>using</code> argument it takes from the URLconf,
-  the <code>django_ox.urls</code> module with its <code>metrics</code> route name, and the metric
-  names and label names listed on the <a href="../monitoring/#prometheus">Monitoring</a>
-  page. <code>METRIC_NAMES</code> is that list in code; <code>CONTENT_TYPE_PROMETHEUS</code> and
-  <code>CONTENT_TYPE_OPENMETRICS</code> are the content types the view serves. A
-  scraped name is a contract with every dashboard that reads it, so a
-  rename is a breaking change. Help text is not part of the contract.</li>
-<li><strong>The actions module</strong> <code>django_ox.actions</code>: <code>retry</code>, <code>discard</code> and
-  <code>expire_lease</code>, their
-  accepted states, and their return values; <code>retry_many</code> and
-  <code>discard_many</code>, the selections they accept and their <code>(changed, skipped)</code>
-  return. <code>RETRYABLE_STATUSES</code> and <code>DISCARDABLE_STATUSES</code> are those
-  accepted states in code; <code>UPDATE_CHUNK_SIZE</code> is exported for reading and
-  its value may change. The admin page that calls
-  them is a convenience over this module; its layout is not a contract,
-  the two action names are.</li>
-<li><strong>The bulk module</strong> <code>django_ox.bulk</code>: <code>enqueue_many(task, calls)</code>, its
-  <code>(args, kwargs)</code> call shape, the input-order return and the
-  all-or-nothing write. <code>INSERT_CHUNK_SIZE</code> is exported for reading; its
-  value may change.</li>
-<li><strong>The exceptions</strong> <code>django_ox.exceptions.TaskAbandoned</code>, recorded against
-  tasks whose worker stopped reporting with no attempts left (it records the
-  lost lease, not a cause of failure), and <code>django_ox.exceptions.TaskTimeout</code>,
-  a <code>TimeoutError</code> raised inside a task that ran past its <code>TASK_TIMEOUT</code> and
-  recorded against the attempt.</li>
-<li><strong>The structured-log contract</strong>: the event names and stable <code>extra</code> keys
-  documented on the <a href="../monitoring/">Monitoring</a> page.</li>
-<li><strong>The database schema</strong> of <code>OxTask</code> and <code>OxScheduleTick</code>, evolved only
-  through shipped migrations.</li>
-<li><strong><code>django_ox.__version__</code>.</strong></li>
-</ul>
-<p>The producer-side API is <code>django.tasks</code> itself (<code>@task</code>, <code>.enqueue()</code>,
-<code>get_result()</code>); django-ox adds nothing there and follows Django's
-contract.</p>
-<h3 id="not-public">Not public</h3>
-<p>Everything else is an implementation detail and may change in any release
-without notice. That covers the <code>django_ox.worker.Worker</code> internals, the cron
-parser (<code>django_ox.cron</code>), the row-to-dataclass conversion
-(<code>django_ox.results</code>), the schedule loader (<code>django_ox.schedules</code>), the
-supervisor behind <code>--processes</code> (<code>django_ox.supervisor</code>) and the hidden
-<code>--worker-index</code> flag it starts each child with, and any name starting
-with an underscore. The exact SQL a claim emits and the
-model's non-schema helper methods are not part of the contract.</p>
-<h2 id="versioning">Versioning</h2>
-<p>django-ox follows <a href="https://semver.org/">Semantic Versioning</a>:</p>
-<ul>
-<li><strong>Breaking changes to any public surface above require a major version.</strong>
-  They are called out in the changelog under a <code>Changed</code> or <code>Removed</code>
-  heading, with the migration step.</li>
-<li><strong>Minor releases add, they do not break.</strong> Patch releases are bug fixes
-  only.</li>
-</ul>
-<p>A minor release may add a status value. A process still on the previous
-minor release can't read a task in the new status. <code>get_result()</code> and
-<code>refresh()</code> raise <code>ValueError</code> on it. The admin shows its status as <code>-</code> and
-has no filter for it. Bulk discards skip it, and <code>queue_stats()</code>, the
-<code>django_ox_tasks</code> gauge and <code>ox_health</code> don't count it. Upgrade every
-process that shares a database before anything writes the new status. The
-release notes name the value, say how it reads through <code>django.tasks</code>, and
-give the upgrade and rollback steps.</p>
-<p>Pin accordingly: <code>django-ox~=1.3.0</code> accepts patch releases only;
-<code>django-ox~=1.3</code> accepts the current major line.</p>
-<h2 id="deprecation-policy">Deprecation policy</h2>
-<p>When a public surface is going to be removed or changed incompatibly, and
-a compatible path exists, it is deprecated before removal rather than
-dropped outright:</p>
-<ul>
-<li>The deprecation is documented in the changelog and, where it can be,
-  surfaced at runtime (a <code>DeprecationWarning</code> or a <code>manage.py check</code>
-  message).</li>
-<li>A deprecated surface is announced in a minor release and removed no earlier
-  than the next major release.</li>
-</ul>
-<p>Security fixes are exempt. A surface that cannot be kept without leaving a
-vulnerability open may change in a patch release. That is documented in the
-changelog, and in a security advisory where relevant.</p>
-<h2 id="supported-python-and-django">Supported Python and Django</h2>
-<p>Each django-ox release is tested against the matrix below in CI, on SQLite
-and PostgreSQL 16 across the grid and MySQL 8 on the oldest and newest
-corners; these are the supported combinations.</p>
-<table>
-<thead>
-<tr>
-<th></th>
-<th>Django 5.2 LTS</th>
-<th>Django 6.0</th>
-<th>Django 6.1</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Python 3.12</strong></td>
-<td>tested</td>
-<td>tested</td>
-<td>tested</td>
-</tr>
-<tr>
-<td><strong>Python 3.13</strong></td>
-<td>tested</td>
-<td>tested</td>
-<td>tested</td>
-</tr>
-<tr>
-<td><strong>Python 3.14</strong></td>
-<td>not supported by Django 5.2</td>
-<td>tested</td>
-<td>tested</td>
-</tr>
-</tbody>
-</table>
-<p>Django 6.0 and later ship the Tasks framework in core. The Django 5.2 legs
-install the <code>django-tasks</code> backport and run the whole suite against it, which
-is what <code>django-ox[backport]</code> pulls in.</p>
-<p>Django 6.1 changed which databases the system checks run against. A command
-that runs the full checks and does not name a database now checks every alias
-in <code>DATABASES</code>. Checking a SQLite or MySQL alias opens a connection and runs
-one query. The cost grows with the number of aliases, and every such command
-pays it. An alias that cannot be reached ends the command. Each django-ox
-command names the alias it checks, so none of them opens another one.
-<code>ox_prune</code>, <code>ox_health</code> and <code>ox_import_beat_schedules</code> name the alias they
-work on and pass it to the checks. <code>ox_worker</code> passes an empty list, so no
-alias is checked at all and a worker starts while its database is down and
-waits for it. What that costs: the system checks that need a database don't
-run for <code>ox_worker</code>. A SQLite build without JSON support fails
-<code>fields.E180</code>. <code>manage.py check --database &lt;alias&gt;</code> reports it, and so does
-every other django-ox command; each exits non-zero. A worker on that alias
-starts and runs tasks anyway, because SQLite stores those columns as text,
-and it logs nothing. On MySQL, Django's column-type checks emit warnings, so
-<code>check</code> still exits 0. The case an operator actually hits is a database with
-no django-ox tables. <code>check --database &lt;alias&gt;</code> does not report that: it
-exits 0 and reports no issues. <code>migrate --check --database &lt;alias&gt;</code> is what
-exits non-zero, and it prints nothing at all. The worker logs
-<code>worker_poll_failed</code> on every pass. A check that cannot fail is worse than
-no check at all. Run <code>migrate --check</code> for the alias before you start a
-worker on it. A configuration error still stops a worker at startup, because
-those checks don't need a database. For the rest,
-pass <code>--skip-checks</code>, or <code>--database</code> to <code>manage.py check</code>. Django 6.0 is
-unaffected, and so is an alias on PostgreSQL. The <a href="../changelog/">changelog</a>
-has the mechanism, what a router does and does not fix, and why <code>--database</code>
-alone is not enough on a command that does not pass it on.</p>
-<p>The support floor tracks Django's own: when a Python or Django version
-reaches end of life upstream, a later django-ox minor release may drop it,
-announced in the changelog. Databases: PostgreSQL, SQLite and MySQL 8 are
-tested in CI. MariaDB 10.6+ uses the same claim path, since Django's own
-floor guarantees <code>SELECT ... FOR UPDATE SKIP LOCKED</code> there, but it is not
-part of the tested matrix.</p>
+<h1 id="django-tasks-without-another-datastore">Django tasks without another datastore</h1>
+<p>Send email, build reports and run scheduled jobs using the database your Django app already needs. django-ox runs the worker and returns unfinished tasks to the queue when a worker dies. No Redis or RabbitMQ.</p>
+<p>Start with the situation that brought you here. These examples use <code>from django.tasks import task</code>; on Django 5.2 LTS, use <code>from django_tasks import task</code>. django-ox supports Django 5.2 LTS, 6.0 and 6.1 on Python 3.12+.</p>
+<h2 id="recover-tasks-left-running-after-a-worker-dies">Recover tasks left RUNNING after a worker dies</h2>
+<p>A deploy, the OOM killer or <code>kill -9</code> stops a django-tasks-db worker mid-task. The row stays RUNNING, but no worker picks it up again.</p>
+<p>Use django-ox so tasks queued through the new backend have a recovery path.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># settings.py: the task code stays as it is</span>
+<span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="c1"># was "django_tasks_db.DatabaseBackend"</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">"LOCK_TIMEOUT"</span><span class="p">:</span> <span class="mi">300</span><span class="p">,</span>  <span class="c1"># seconds a silent worker keeps its task</span>
+            <span class="s2">"MAX_ATTEMPTS"</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>  <span class="c1"># claims per task, a dead worker's included</span>
+        <span class="p">},</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Both values are the defaults. Swap the app in <code>INSTALLED_APPS</code>, run
+<code>python manage.py migrate django_ox</code>, and start <code>python manage.py ox_worker</code>
+where you ran <code>db_worker</code>. Existing django-tasks-db rows need separate handling; changing the backend does not recover them.</p>
+<p>Every django-ox worker runs a reaper. When a worker's lease expires, its unfinished task returns to READY for another attempt, subject to <code>MAX_ATTEMPTS</code>. No separate recovery script.</p>
+<p>At the default timeout, recovery takes up to about 330 seconds. Execution is at-least-once: the previous attempt may already have applied an effect, so make that effect safe to repeat.</p>
+<h2 id="run-django-background-jobs-without-redis-or-rabbitmq">Run Django background jobs without Redis or RabbitMQ</h2>
+<p>An email or report needs to run outside the request. Keep that work in your database instead of adding a broker just to get it off the response path.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># reports/tasks.py</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+
+
+<span class="nd">@task</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">build_report</span><span class="p">(</span><span class="n">account_id</span><span class="p">):</span>
+    <span class="k">return</span> <span class="sa">f</span><span class="s2">"report for account </span><span class="si">{</span><span class="n">account_id</span><span class="si">}</span><span class="s2">"</span>
+
+
+<span class="c1"># from a view, a signal handler or a command</span>
+<span class="n">build_report</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="n">account_id</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+</code></pre></div>
+<p><code>enqueue()</code> writes a task row. Run <code>python manage.py ox_worker --concurrency 4</code> to execute the work.</p>
+<p>Failed tasks retry with exponential backoff up to <code>MAX_ATTEMPTS</code>. When a job needs attention, open Django admin to inspect each attempt's traceback. You supervise a worker process, but there is no second datastore to provision or monitor. The queue uses your database's capacity.</p>
+<h2 id="enqueue-a-task-inside-transactionatomic">Enqueue a task inside transaction.atomic()</h2>
+<p>Save the user and queue their welcome email together. If signup rolls back, its email task should disappear too.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.contrib.auth</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_user_model</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">django.db</span><span class="w"> </span><span class="kn">import</span> <span class="n">transaction</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">send_welcome</span>  <span class="c1"># a plain @task function</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">register</span><span class="p">(</span><span class="n">username</span><span class="p">,</span> <span class="n">email</span><span class="p">):</span>
+    <span class="k">with</span> <span class="n">transaction</span><span class="o">.</span><span class="n">atomic</span><span class="p">():</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="n">get_user_model</span><span class="p">()</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">create_user</span><span class="p">(</span><span class="n">username</span><span class="p">,</span> <span class="n">email</span><span class="p">)</span>
+        <span class="n">send_welcome</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="n">user</span><span class="o">.</span><span class="n">pk</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">user</span>
+</code></pre></div>
+<p><code>enqueue()</code> is one INSERT on the database holding <code>OxTask</code>. Put the task and user row in the same database transaction, and both commit or neither does. Workers see the task only after the commit. No <code>transaction.on_commit()</code> needed.</p>
+<p>That is the advantage over sending to a separate broker: the enqueue can share your database transaction. django-tasks-db shares this property too.</p>
+<p>The transaction covers the database writes, not email delivery. Make the task safe to repeat.</p>
+<h2 id="run-recurring-django-tasks-without-a-scheduler-process">Run recurring Django tasks without a scheduler process</h2>
+<p>Run the nightly report and refresh exchange rates every five minutes without deploying a separate dispatcher such as <code>celery beat</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="n">TASKS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"default"</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">"BACKEND"</span><span class="p">:</span> <span class="s2">"django_ox.backend.OxBackend"</span><span class="p">,</span>
+        <span class="s2">"OPTIONS"</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">"SCHEDULES"</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">"nightly-report"</span><span class="p">:</span> <span class="p">{</span>
+                    <span class="s2">"task"</span><span class="p">:</span> <span class="s2">"reports.tasks.nightly_report"</span><span class="p">,</span>
+                    <span class="s2">"cron"</span><span class="p">:</span> <span class="s2">"0 3 * * *"</span><span class="p">,</span>
+                <span class="p">},</span>
+                <span class="s2">"refresh-rates"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"task"</span><span class="p">:</span> <span class="s2">"reports.tasks.refresh_rates"</span><span class="p">,</span> <span class="s2">"every"</span><span class="p">:</span> <span class="mi">300</span><span class="p">},</span>
+            <span class="p">},</span>
+        <span class="p">},</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Every worker dispatches due schedules. A unique constraint on the schedule name and tick time prevents workers from enqueueing the same tick twice.</p>
+<p>Keep schedules in settings, or let your team pause and edit them as <a href="../stored-schedules/">rows in Django admin</a>. See <a href="../recurring-tasks/">Recurring tasks</a> for the configuration.</p>
+<p>Schedules run while at least one worker is running. After an outage, only the most recent missed tick is enqueued.</p>
+<h2 id="deduplicate-a-repeated-webhook-with-oxpull-pro">Deduplicate a repeated webhook with Oxpull Pro</h2>
+<p>A payment provider sends the same event twice. Your webhook queues the same invoice sync twice. Stop the duplicate at enqueue rather than making the queue do the same work again.</p>
+<p>With django-ox alone, these calls create separate tasks:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">django.tasks</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+
+
+<span class="nd">@task</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">sync_invoice</span><span class="p">(</span><span class="n">invoice_id</span><span class="p">):</span> <span class="o">...</span>
+
+
+<span class="n">sync_invoice</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="mi">1001</span><span class="p">)</span>
+<span class="n">sync_invoice</span><span class="o">.</span><span class="n">enqueue</span><span class="p">(</span><span class="mi">1001</span><span class="p">)</span>  <span class="c1"># django-ox: a second row, a second run</span>
+</code></pre></div>
+<p>Oxpull Pro's unique tasks deduplicate inside the task's own transaction. While a task with the same key is READY or RUNNING, enqueueing it again returns the pending task's result without writing another row.</p>
+<p>Once the task settles, the same call can enqueue again. This prevents duplicate pending work; it does not make external effects exactly-once. Tasks still need to be safe to repeat.</p>
+<p>Pro also lets you track a batch through completion, control task starts with shared rate limits, and connect dependent tasks into workflows. You get email support from the maintainer and priority feature requests.</p>
+<p><a href="https://oxpull.com/">Order Oxpull Pro</a> for $399 per year, per company, excluding VAT where it applies. Submit the form; your invoice arrives within two business days. Once paid, private package index credentials arrive by email. Installation stays <code>pip install</code>. Pro requires Django 6.0+.</p>
+<h2 id="when-to-choose-another-tool">When to choose another tool</h2>
+<p>Choose another backend if you need to revoke a chosen running task, use chains, groups or chords, or exceed the throughput one database can serve. Celery supports revocation and those composition patterns.</p>
+<p>Transactional enqueue requires the task and model rows to share a database. A separate queue database cannot give you that shared commit.</p>
+<p>For CPU-bound work, the thread pool is not enough on its own. Use <code>--processes N</code> and measure your workload.</p>
+<p><a href="../background-tasks/"><strong>Follow the step-by-step guide</strong></a> to install django-ox and run your first tasks.</p>
 
 
 
@@ -1168,7 +1082,7 @@ part of the tested matrix.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../benchmarks/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Benchmarks">
+          <a href="../why-django-ox/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Why django-ox">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -1178,20 +1092,20 @@ part of the tested matrix.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                Benchmarks
+                Why django-ox
               </div>
             </div>
           </a>
         
         
           
-          <a href="../pro/" class="md-footer__link md-footer__link--next" aria-label="Next: Pro">
+          <a href="../choosing/" class="md-footer__link md-footer__link--next" aria-label="Next: Choosing a backend">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Pro
+                Choosing a backend
               </div>
             </div>
             <div class="md-footer__button md-icon">
