@@ -12,7 +12,7 @@ from typing import Any
 
 from django.core.management.base import CommandError, CommandParser
 
-from django_ox.compat import DEFAULT_TASK_BACKEND_ALIAS
+from django_ox.compat import DEFAULT_TASK_BACKEND_ALIAS, task_backends
 from django_ox.management._database import DatabaseCommand
 from django_ox.supervisor import STOP_SIGNALS, SUPERVISOR_PID_ENV, Supervisor
 from django_ox.timeouts import RECYCLE_EXIT_CODE
@@ -93,6 +93,13 @@ class Command(DatabaseCommand):
         # Before the supervisor branch, so a bad alias is reported by the
         # parent rather than by every child it starts.
         alias = self.database(options)
+        backend_alias = options["backend"]
+        if backend_alias not in task_backends:
+            known = ", ".join(sorted(task_backends)) or "none"
+            raise CommandError(
+                f"No task backend alias {backend_alias!r} in TASKS. "
+                f"Known aliases: {known}."
+            )
         if options["verbosity"] > 0 and not logger.handlers:
             handler = logging.StreamHandler(self.stderr)
             handler.setFormatter(

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Reject unknown `ox_worker --backend` aliases before starting workers, naming
+  the invalid alias and listing configured choices. Ordinary invocation reports
+  one error line; `--traceback` still shows the traceback.
+
 ## [1.3.1] - 2026-09-20
 
 No code change since 1.3.0 except the version constant.
@@ -1157,6 +1165,7 @@ Initial release.
   the public API surface, the pre-1.0 SemVer rule, the deprecation
   window, and the supported Python and Django matrix.
 
+[Unreleased]: https://github.com/oxpull/django-ox/compare/v1.3.1...HEAD
 [1.3.1]: https://github.com/oxpull/django-ox/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/oxpull/django-ox/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/oxpull/django-ox/compare/v1.1.0...v1.2.0
