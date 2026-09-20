@@ -1,3 +1,6 @@
+import json
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from django.core.management.base import CommandError, CommandParser
@@ -13,6 +16,10 @@ from django_ox.models import OxScheduleTick, OxTask
 
 class Command(DatabaseCommand):
     help = "Delete finished task rows older than a cutoff."
+
+    _reported = False
+    _task_rows = 0
+    _tick_rows = 0
 
     def add_arguments(self, parser: CommandParser) -> None:
         super().add_arguments(parser)
@@ -51,6 +58,16 @@ class Command(DatabaseCommand):
             "--dry-run",
             action="store_true",
             help="Report how many rows would be deleted without deleting any.",
+        )
+        parser.add_argument(
+            "--format",
+            choices=["text", "json"],
+            default="text",
+            help=(
+                "Output format. json prints one object with the same figures "
+                "on stdout; the exit status is the same either way "
+                "(default: %(default)s)."
+            ),
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
@@ -94,28 +111,96 @@ class Command(DatabaseCommand):
         ]
         prunable_ticks = ticks.filter(scheduled_for__lt=cutoff).exclude(pk__in=anchors)
 
+        as_json = options["format"] == "json"
+
         if options["dry_run"]:
-            self.stdout.write(
-                f"Would delete {prunable.count()} {label} task row(s) "
-                f"finished before {cutoff.isoformat()}."
+            task_count = prunable.count()
+            tick_count = prunable_ticks.count()
+            if as_json:
+                self._write_json(
+                    queue=queue,
+                    cutoff=cutoff,
+                    statuses=statuses,
+                    task_rows=task_count,
+                    tick_rows=tick_count,
+                    dry_run=True,
+                )
+            else:
+                self.stdout.write(
+                    f"Would delete {task_count} {label} task row(s) "
+                    f"finished before {cutoff.isoformat()}."
+                )
+                self.stdout.write(
+                    f"Would delete {tick_count} schedule tick row(s) "
+                    f"scheduled before {cutoff.isoformat()}."
+                )
+            return
+
+        self._task_rows = 0
+        self._tick_rows = 0
+        try:
+            deleted = self._delete_tasks_in_batches(
+                prunable, options["batch_size"], label, alias
             )
-            self.stdout.write(
-                f"Would delete {prunable_ticks.count()} schedule tick row(s) "
-                f"scheduled before {cutoff.isoformat()}."
+            self._task_rows = deleted
+            deleted_ticks = self._delete_in_batches(
+                prunable_ticks, options["batch_size"]
+            )
+            self._tick_rows = deleted_ticks
+        except CommandError:
+            if as_json and not self._reported:
+                self._write_json(
+                    queue=queue,
+                    cutoff=cutoff,
+                    statuses=statuses,
+                    task_rows=self._task_rows,
+                    tick_rows=self._tick_rows,
+                    dry_run=False,
+                )
+            raise
+
+        if as_json:
+            self._write_json(
+                queue=queue,
+                cutoff=cutoff,
+                statuses=statuses,
+                task_rows=deleted,
+                tick_rows=deleted_ticks,
+                dry_run=False,
             )
             return
 
-        deleted = self._delete_tasks_in_batches(
-            prunable, options["batch_size"], label, alias
-        )
         self.stdout.write(
             f"Deleted {deleted} {label} task row(s) "
             f"finished before {cutoff.isoformat()}."
         )
-        deleted_ticks = self._delete_in_batches(prunable_ticks, options["batch_size"])
         self.stdout.write(
             f"Deleted {deleted_ticks} schedule tick row(s) "
             f"scheduled before {cutoff.isoformat()}."
+        )
+
+    def _write_json(
+        self,
+        *,
+        queue: str | None,
+        cutoff: datetime,
+        statuses: Sequence[str],
+        task_rows: int,
+        tick_rows: int,
+        dry_run: bool,
+    ) -> None:
+        self._reported = True
+        self.stdout.write(
+            json.dumps(
+                {
+                    "queue": queue,
+                    "cutoff": cutoff.isoformat(),
+                    "statuses": list(statuses),
+                    "task_rows": task_rows,
+                    "tick_rows": tick_rows,
+                    "dry_run": dry_run,
+                }
+            )
         )
 
     def _delete_tasks_in_batches(
@@ -143,6 +228,7 @@ class Command(DatabaseCommand):
                         # The batches before this one have committed. The
                         # candidates are the first rows still prunable, so a
                         # rerun starts again from this batch.
+                        self._task_rows = deleted
                         raise CommandError(
                             f"Stopped after deleting {deleted} {label} task "
                             "row(s). The next batch hit a database deadlock or "
@@ -156,6 +242,7 @@ class Command(DatabaseCommand):
                 # Counted once the batch has committed, so a batch that ran
                 # twice counts once.
                 deleted += count
+                self._task_rows = deleted
                 break
         return deleted
 
@@ -204,4 +291,5 @@ class Command(DatabaseCommand):
             if not batch:
                 break
             deleted += prunable.filter(pk__in=batch).delete()[0]
+            self._tick_rows = deleted
         return deleted
