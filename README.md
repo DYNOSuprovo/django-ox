@@ -192,6 +192,7 @@ python manage.py ox_prune --older-than 7d
 | `--include-failed` | off | Also delete FAILED and LOST rows. By default they are kept: they hold the per-attempt tracebacks and can be retried. |
 | `--batch-size` | `1000` | Rows per DELETE statement, so pruning a large table never takes a long lock or builds a giant IN clause. |
 | `--dry-run` | off | Report how many rows would be deleted without deleting any. |
+| `--format` | `text` | `json` prints one object on stdout instead of the two report lines: `queue`, `cutoff`, `statuses`, `task_rows`, `tick_rows` and `dry_run`. `queue` is `null` when no `--queue` is given, `cutoff` is ISO 8601, and `statuses` is a list. On a database error during deletion, the object is printed too, with counts of rows already deleted in committed batches, before the same non-zero exit. |
 | `--database` | the alias `OxTask` writes to | Database alias to prune. The rows it reads and the rows it deletes are on that one alias. |
 
 Only SUCCESSFUL and DISCARDED rows (and, with `--include-failed`, FAILED and

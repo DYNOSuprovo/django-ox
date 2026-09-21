@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from io import StringIO
 
 import pytest
+from django.conf import settings
 from django.core.management import ManagementUtility, call_command
 from django.core.management.base import CommandError
 from django.db import (
@@ -1113,6 +1114,9 @@ class TestPruneJsonFormat:
 
         out = prune("--format", "json")
         data = json.loads(out)
+        # One line, so a cron line can pipe it straight into jq or a
+        # `while read` loop. json.loads() alone accepts pretty-printing.
+        assert out.strip() == json.dumps(data)
 
         assert data["queue"] is None
         assert data["statuses"] == ["SUCCESSFUL", "DISCARDED"]
@@ -1173,6 +1177,76 @@ class TestPruneJsonFormat:
         assert data["tick_rows"] == 1
         assert OxTask.objects.count() == 1
         assert OxScheduleTick.objects.count() == 2
+
+    TICK_DELETE = "DELETE FROM DJANGO_OX_OXSCHEDULETICK"
+
+    def test_text_format_reports_task_rows_when_tick_pruning_fails(self):
+        # The task rows are gone whatever happens next. A failure while
+        # pruning ticks must not take their count with it.
+        make_old_rows(2, OxTask.Status.SUCCESSFUL)
+        make_tick("a", scheduled_days_ago=30)
+        make_tick("a", scheduled_days_ago=5)
+
+        out = StringIO()
+        with (
+            failing(
+                self.TICK_DELETE, lambda: simulated("mysql-deadlock"), lambda n: n == 1
+            ),
+            pytest.raises(DatabaseError),
+        ):
+            call_command("ox_prune", stdout=out)
+
+        body = out.getvalue()
+        assert "Deleted 2" in body
+        assert "task row(s)" in body
+        assert "schedule tick row(s)" not in body
+
+    def test_json_format_reports_task_rows_when_tick_pruning_fails(self):
+        make_old_rows(2, OxTask.Status.SUCCESSFUL)
+        make_tick("a", scheduled_days_ago=30)
+        make_tick("a", scheduled_days_ago=5)
+
+        out = StringIO()
+        with (
+            failing(
+                self.TICK_DELETE, lambda: simulated("mysql-deadlock"), lambda n: n == 1
+            ),
+            pytest.raises(DatabaseError),
+        ):
+            call_command("ox_prune", "--format", "json", stdout=out)
+
+        data = json.loads(out.getvalue())
+        assert data["task_rows"] == 2
+        assert data["tick_rows"] == 0
+        assert data["dry_run"] is False
+
+    def test_json_format_reports_tick_rows_deleted_before_a_failure(self):
+        make_tick("a", scheduled_days_ago=5)
+        for days in (40, 39, 38, 37):
+            make_tick("a", scheduled_days_ago=days)
+
+        out = StringIO()
+        with (
+            failing(
+                self.TICK_DELETE, lambda: simulated("mysql-deadlock"), lambda n: n == 2
+            ),
+            pytest.raises(DatabaseError),
+        ):
+            call_command("ox_prune", "--format", "json", "--batch-size=1", stdout=out)
+
+        data = json.loads(out.getvalue())
+        assert data["tick_rows"] == 1
+
+    def test_json_format_cutoff_follows_older_than(self):
+        before = timezone.now()
+        out = prune("--format", "json", "--older-than", "30d")
+        after = timezone.now()
+
+        cutoff = datetime.fromisoformat(json.loads(out)["cutoff"])
+        # Aware or naive follows USE_TZ, the way timezone.now() does. The
+        # naive settings modules run this too.
+        assert (cutoff.utcoffset() is not None) is settings.USE_TZ
+        assert before - timedelta(days=30) <= cutoff <= after - timedelta(days=30)
 
     @pytest.mark.parametrize("kind", CONTENTION)
     def test_json_format_contention_reports_partial_task_rows(self, kind):

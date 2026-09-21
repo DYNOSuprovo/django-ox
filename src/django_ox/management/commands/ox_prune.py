@@ -17,7 +17,6 @@ from django_ox.models import OxScheduleTick, OxTask
 class Command(DatabaseCommand):
     help = "Delete finished task rows older than a cutoff."
 
-    _reported = False
     _task_rows = 0
     _tick_rows = 0
 
@@ -142,13 +141,24 @@ class Command(DatabaseCommand):
             deleted = self._delete_tasks_in_batches(
                 prunable, options["batch_size"], label, alias
             )
-            self._task_rows = deleted
+            # Written before the ticks are touched, the way it was before
+            # --format text gained a second deletion behind the same try.
+            # A tick failure must not cost the operator the task count.
+            if not as_json:
+                self.stdout.write(
+                    f"Deleted {deleted} {label} task row(s) "
+                    f"finished before {cutoff.isoformat()}."
+                )
             deleted_ticks = self._delete_in_batches(
                 prunable_ticks, options["batch_size"]
             )
-            self._tick_rows = deleted_ticks
-        except CommandError:
-            if as_json and not self._reported:
+        except (CommandError, DatabaseError):
+            # DatabaseError too: _delete_in_batches has no retry wrapper, and
+            # is_contention() only knows PostgreSQL and MySQL codes, so a
+            # lock on SQLite or a failure in the tick phase arrives raw.
+            # Either way the committed rows are gone and their count is the
+            # one thing the caller cannot recover afterwards.
+            if as_json:
                 self._write_json(
                     queue=queue,
                     cutoff=cutoff,
@@ -171,10 +181,6 @@ class Command(DatabaseCommand):
             return
 
         self.stdout.write(
-            f"Deleted {deleted} {label} task row(s) "
-            f"finished before {cutoff.isoformat()}."
-        )
-        self.stdout.write(
             f"Deleted {deleted_ticks} schedule tick row(s) "
             f"scheduled before {cutoff.isoformat()}."
         )
@@ -189,7 +195,6 @@ class Command(DatabaseCommand):
         tick_rows: int,
         dry_run: bool,
     ) -> None:
-        self._reported = True
         self.stdout.write(
             json.dumps(
                 {
@@ -228,7 +233,6 @@ class Command(DatabaseCommand):
                         # The batches before this one have committed. The
                         # candidates are the first rows still prunable, so a
                         # rerun starts again from this batch.
-                        self._task_rows = deleted
                         raise CommandError(
                             f"Stopped after deleting {deleted} {label} task "
                             "row(s). The next batch hit a database deadlock or "
